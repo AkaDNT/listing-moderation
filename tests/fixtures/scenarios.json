@@ -1,0 +1,11 @@
+{
+  "note":"Expected future behavior; these are not application test results.",
+  "cases":[
+    {"id":"C01","tasks":["T06","T08"],"body":{"seller_id":"s-1001","title":"replica iPhone","description":"","price_vnd":6000000,"category_id":"c-phones"},"expected":{"submission":202,"initial_status":"pending","auto_status":"auto_rejected","rule":"R1","message_contains":"replica"}},
+    {"id":"C02","tasks":["T06","T08","T09"],"body":{"seller_id":"s-1005","title":"Phone","description":"","price_vnd":6000000,"category_id":"c-phones"},"expected":{"auto_status":"auto_approved","eventual_status":"published","rule":"R4"}},
+    {"id":"C05","tasks":["T06","T08"],"body":{"seller_id":"s-1004","title":"Phone","description":"","price_vnd":6000000,"category_id":"c-phones"},"expected":{"auto_status":"needs_human","rule":"R5"}},
+    {"id":"C15","tasks":["T04"],"requests":50,"same_key":true,"same_body":true,"expected":{"listings":1,"jobs":1,"responses":{"202":1,"200":49}}},
+    {"id":"C18","tasks":["T03","T05"],"raw_body":"{\"seller_id\":\"s-1002\",\"title\":\"Phone\",\"description\":\"\",\"price_vnd\":9007199254740993,\"category_id\":\"c-phones\"}","expected":{"submission":202,"price_number_token":"9007199254740993"}},
+    {"id":"C21","tasks":["T09"],"initial_status":"needs_human","concurrent_decisions":["approve","reject"],"expected":{"responses":{"200":1,"409":1},"human_history":1}}
+  ]
+}

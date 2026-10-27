@@ -1,0 +1,59 @@
+{
+  "source": "openapi.yaml",
+  "endpoints": [
+    {"path":"/livez","method":"get","statuses":["200","503"]},
+    {"path":"/readyz","method":"get","statuses":["200","503"]},
+    {"path":"/v1/listings","method":"post","statuses":["200","202","400","409","422"]},
+    {"path":"/v1/listings","method":"get","statuses":["200"]},
+    {"path":"/v1/listings/{id}","method":"get","statuses":["200","404"]},
+    {"path":"/v1/listings/{id}/decision","method":"post","statuses":["200","404","409"]}
+  ],
+  "schemas": {
+    "Status": {"type":"string","enum":["pending","auto_approved","auto_rejected","needs_human","published","rejected","expired"]},
+    "ListingRequest": {
+      "type":"object","required":["seller_id","title","description","price_vnd","category_id"],
+      "properties": {
+        "seller_id":{"type":"string"},
+        "title":{"type":"string","minLength":1,"maxLength":200},
+        "description":{"type":"string","maxLength":5000},
+        "price_vnd":{"type":"integer","format":"int64","minimum":0},
+        "category_id":{"type":"string"}
+      }
+    },
+    "ListingAccepted":{"type":"object","required":["id","status"],"properties":{"id":{"type":"string"},"status":{"$ref":"#/components/schemas/Status"}}},
+    "Listing":{
+      "type":"object","required":["id","seller_id","title","description","price_vnd","category_id","status","created_at"],
+      "properties":{
+        "id":{"type":"string"},"seller_id":{"type":"string"},"title":{"type":"string"},"description":{"type":"string"},
+        "price_vnd":{"type":"integer","format":"int64"},"category_id":{"type":"string"},
+        "status":{"$ref":"#/components/schemas/Status"},"created_at":{"type":"string","format":"date-time"},
+        "decided_at":{"type":"string","format":"date-time","nullable":true},"decision":{"$ref":"#/components/schemas/Decision"}
+      }
+    },
+    "Decision":{"type":"object","required":["outcome","reasons"],"nullable":true,"properties":{"outcome":{"type":"string","enum":["approved","rejected","escalated"]},"reasons":{"type":"array","items":{"$ref":"#/components/schemas/Reason"}}}},
+    "Reason":{"type":"object","required":["rule_id","message"],"properties":{"rule_id":{"type":"string"},"message":{"type":"string"},"detail":{"type":"object","additionalProperties":true}}},
+    "Error":{"type":"object","required":["error"],"properties":{"error":{"type":"object","required":["code","message"],"properties":{"code":{"type":"string"},"message":{"type":"string"}}}}}
+  },
+  "list_parameters":[
+    {"in":"query","name":"seller_id","schema":{"type":"string"}},
+    {"in":"query","name":"status","schema":{"$ref":"#/components/schemas/Status"}},
+    {"in":"query","name":"limit","schema":{"type":"integer","minimum":1,"maximum":100,"default":20}}
+  ],
+  "path_parameters":[{"in":"path","name":"id","required":true,"schema":{"type":"string"}}],
+  "submission_request":{"$ref":"#/components/schemas/ListingRequest"},
+  "human_request":{"type":"object","required":["decision","moderator_id"],"properties":{"decision":{"type":"string","enum":["approve","reject"]},"moderator_id":{"type":"string"},"note":{"type":"string"}}},
+  "response_schemas": {
+    "GET /livez 200":{"type":"object","required":["status"],"properties":{"status":{"type":"string"}}},
+    "GET /readyz 200":{"type":"object","required":["status"],"properties":{"status":{"type":"string"}}},
+    "POST /v1/listings 202":{"$ref":"#/components/schemas/ListingAccepted"},
+    "POST /v1/listings 200":{"$ref":"#/components/schemas/ListingAccepted"},
+    "POST /v1/listings 400":{"$ref":"#/components/schemas/Error"},
+    "POST /v1/listings 409":{"$ref":"#/components/schemas/Error"},
+    "POST /v1/listings 422":{"$ref":"#/components/schemas/Error"},
+    "GET /v1/listings 200":{"type":"object","required":["items"],"properties":{"items":{"type":"array","items":{"$ref":"#/components/schemas/Listing"}}}},
+    "GET /v1/listings/{id} 200":{"$ref":"#/components/schemas/Listing"},
+    "GET /v1/listings/{id} 404":{"$ref":"#/components/schemas/Error"},
+    "POST /v1/listings/{id}/decision 200":{"$ref":"#/components/schemas/Listing"},
+    "POST /v1/listings/{id}/decision 409":{"$ref":"#/components/schemas/Error"}
+  }
+}
