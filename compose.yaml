@@ -1,0 +1,73 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: moderator
+      POSTGRES_PASSWORD: local-only
+      POSTGRES_DB: listings
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U moderator -d listings"]
+      interval: 2s
+      timeout: 3s
+      retries: 45
+      start_period: 3s
+    stop_grace_period: 10s
+    labels:
+      com.listing-moderation.workspace: "${LM_WORKSPACE:?workspace owner is required}"
+      com.listing-moderation.mode: "${LM_MODE:?lifecycle mode is required}"
+      com.listing-moderation.invocation: "${LM_INVOCATION:?invocation is required}"
+
+  api:
+    build:
+      context: .
+      target: runtime
+    environment:
+      PORT: "8080"
+      DATABASE_URL: postgres://moderator:local-only@db:5432/listings
+      POLL_INTERVAL_MS: "1000"
+      LISTING_TTL_DAYS: "30"
+    ports:
+      - "${PORT:-8080}:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+    stop_grace_period: 10s
+    labels:
+      com.listing-moderation.workspace: "${LM_WORKSPACE:?workspace owner is required}"
+      com.listing-moderation.mode: "${LM_MODE:?lifecycle mode is required}"
+      com.listing-moderation.invocation: "${LM_INVOCATION:?invocation is required}"
+
+  worker:
+    build:
+      context: .
+      target: runtime
+    command: ["node", "dist/src/worker.js"]
+    environment:
+      DATABASE_URL: postgres://moderator:local-only@db:5432/listings
+      POLL_INTERVAL_MS: "1000"
+      LISTING_TTL_DAYS: "30"
+    depends_on:
+      db:
+        condition: service_healthy
+    stop_grace_period: 10s
+    labels:
+      com.listing-moderation.workspace: "${LM_WORKSPACE:?workspace owner is required}"
+      com.listing-moderation.mode: "${LM_MODE:?lifecycle mode is required}"
+      com.listing-moderation.invocation: "${LM_INVOCATION:?invocation is required}"
+
+volumes:
+  db-data:
+    name: "${COMPOSE_PROJECT_NAME:?project is required}-db-data"
+    labels:
+      com.listing-moderation.workspace: "${LM_WORKSPACE:?workspace owner is required}"
+      com.listing-moderation.mode: "${LM_MODE:?lifecycle mode is required}"
+      com.listing-moderation.invocation: "${LM_MODE}"
+
+networks:
+  default:
+    labels:
+      com.listing-moderation.workspace: "${LM_WORKSPACE:?workspace owner is required}"
+      com.listing-moderation.mode: "${LM_MODE:?lifecycle mode is required}"
+      com.listing-moderation.invocation: "${LM_INVOCATION:?invocation is required}"
