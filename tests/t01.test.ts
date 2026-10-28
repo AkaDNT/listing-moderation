@@ -69,7 +69,15 @@ test('actual API HTTP entrypoint exposes the exact live contract and validates s
     assert.deepEqual(await response.json(), { status: 'ok' });
     const readiness = await fetch(`http://127.0.0.1:${address.port}/readyz`, { headers: { connection: 'close' } });
     assert.equal(readiness.status, 404);
-    await readiness.arrayBuffer();
+    const readinessError = await readiness.json() as { error: { code: string; message: string } };
+    assert.equal(readinessError.error.code, 'not_found');
+
+    const malformed = await fetch(`http://127.0.0.1:${address.port}/missing`, {
+      method: 'POST', headers: { connection: 'close', 'content-type': 'application/json' }, body: '{',
+    });
+    assert.equal(malformed.status, 400);
+    const malformedError = await malformed.json() as { error: { code: string; message: string } };
+    assert.equal(malformedError.error.code, 'invalid_request');
     const bootstrapped = await observer.query<{ sellers: string; migrations: string }>(
       `SELECT (SELECT count(*)::text FROM sellers) AS sellers,
               (SELECT count(*)::text FROM schema_migrations) AS migrations`,

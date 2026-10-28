@@ -24,6 +24,11 @@ commands refuse pre-existing containers and networks for the selected project;
 The first run creates the T02 schema and loads 8 sellers, 5 categories, and 6
 banned keywords from `seed/`. Later starts verify migration checksums and
 restore seed rows from those files. Rows outside the seed files are preserved.
+The shared HTTP transport reads JSON without rounding integer tokens, validates
+listing request shapes through its production pipe, and emits bigint values as
+JSON numbers. It rejects request bodies over 1 MiB, nesting over 128 levels,
+duplicate keys, malformed UTF-8 and unsupported JSON media/encoding. The actual
+listing submission and read endpoints are added in T04/T05.
 If the lifecycle lock is left behind after a forced kill or machine crash, inspect
 the PID file and Docker resources before removing the stale lock directory under
 `${TMPDIR:-/tmp}`.

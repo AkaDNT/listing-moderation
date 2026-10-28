@@ -1,8 +1,8 @@
 # Assumptions and decisions
 
-Status: T00–T02 foundation implemented; moderation and public listing behavior
-remain planned for later tasks. Entries A1–A10 describe owner decisions or
-assumptions for later tasks, not behavior already implemented.
+Status: T00–T03 transport/database foundation implemented; moderation and the
+public listing endpoints remain planned for later tasks. Entries identify
+planned or implemented behavior individually.
 Source labels below distinguish the normative OpenAPI/brief from owner decisions
 recorded in the local implementation plan. Q1–Q13 transcripts are not present;
 the plan's summary is the available record. Revisit entries if implementation
@@ -68,6 +68,11 @@ or new requirements change the decision.
 
 **Cost of being wrong:** Listings may disappear too early/late; changing existing deadlines requires an explicit migration policy.
 
+**Current implementation / T10 handoff:** `src/config.ts:30` currently requires
+LISTING_TTL_DAYS; Compose supplies 30, and `tests/t01.test.ts:37` asserts that
+missing configuration fails. An application-level default independent of Compose
+is not implemented. Resolve and test that default in T10; do not change it in T03.
+
 ## A7 — Current result and internal history
 
 **Ambiguity:** OpenAPI represents the current decision without a public history endpoint; audit storage is unspecified.
@@ -100,9 +105,9 @@ or new requirements change the decision.
 
 ## A10 — Exact integer transport and text length
 
-**Ambiguity:** OpenAPI uses integer/int64; ordinary JavaScript number parsing cannot represent its full range. Text length units and exponent notation are not further specified.
+**Ambiguity:** OpenAPI uses integer/int64; ordinary JavaScript number parsing cannot represent its full range. Text length units need an explicit implementation convention. OAS 3.0.3 §4.4 defines integer syntax without fraction or exponent.
 
-**Decision:** Per plan, accept 0..9223372036854775807 exactly, persist BIGINT, serialize JSON number tokens, and count Unicode code points for text bounds. Lossless raw HTTP parsing must precede validation. The exact policy for integer-valued exponent notation remains a documented T03 choice.
+**Decision (owner revised 2026-10-28; transport implemented in T03):** Accept price_vnd JSON integer tokens from 0 through 9223372036854775807 exactly; reject fraction/exponent tokens including 1000.0 and 1e3 with 400. This supersedes the earlier mathematical-integer choice after review against [OAS 3.0.3 §4.4](https://spec.openapis.org/oas/v3.0.3#data-types). Normalize integer-token -0 to output 0. The shared listing request pipe returns bigint; response serialization emits numeric tokens. Text bounds count Unicode code points. Unknown numeric fields retain full JSON grammar and precision. The public POST/GET listing endpoints and their conformance evidence remain T04/T05 work.
 
 **Rationale:** Prevent silent rounding and avoid requiring price strings absent from OpenAPI.
 
@@ -129,3 +134,46 @@ fresh database, and avoid deleting data during recovery.
 
 **Cost of being wrong:** A stale extra reference row remains available to later
 business logic until explicitly removed by a separately reviewed migration.
+
+## A12 — Planned T03 JSON resource budgets
+
+**Ambiguity:** OpenAPI does not prescribe a request byte limit or JSON nesting
+budget. The implementation plan requires a bounded body and safe parser errors.
+
+**Decision (T03 implementation):** Bound raw JSON
+request bodies at 1,048,576 bytes, using actual received bytes rather than trusting
+Content-Length. Reject larger bodies with 413 and the standard error envelope
+(`payload_too_large`). Limit object/array nesting to 128 levels, with the root
+container at level 1; deeper input returns 400 `invalid_request`. Record these
+as transport resource policies, not new required listing fields. Use the JSON
+library for parsing; any depth preflight guard only counts nesting outside
+strings and must handle escapes, without implementing another JSON grammar.
+
+**Rationale:** Bound parser resource use and make threshold behavior testable
+through the production HTTP path, including chunked bodies and failure recovery.
+
+**Cost of being wrong:** Very large unknown fields or unusually deep JSON that
+otherwise satisfies the field schema will be rejected. Changing these budgets
+later requires updating documentation and HTTP boundary tests together.
+
+## A13 — Planned T03 JSON decoding and media policy
+
+**Ambiguity:** OpenAPI does not define duplicate-key handling, malformed UTF-8,
+or the response policy for unsupported body media/encoding.
+
+**Decision (T03 implementation, policy reviewed 2026-10-28):** Reject duplicate
+object keys at every depth and malformed UTF-8 with 400 `invalid_request`.
+Decode UTF-8 strictly. For requests carrying a body, accept application/json
+and application/*+json; charset may be absent or UTF-8 (case-insensitive).
+Reject malformed/unsupported media types or charsets, and Content-Encoding
+other than absent or identity, with 400 `invalid_request`; do not decompress.
+Bodyless GET does not require Content-Type. Preserve unknown JSON values without
+stripping, including lossless numbers (A5/A10). Resource limits follow A12.
+
+**Rationale:** Make ambiguous inputs deterministic without adding required
+listing fields. Duplicate-key behavior was verified against the pinned library
+in Node 22/CommonJS and by actual production parser HTTP tests.
+
+**Cost of being wrong:** Clients sending compressed JSON, other media/charsets,
+or duplicate-key objects will be rejected; 400 for unsupported transport is a
+project choice and must be documented and exercised through actual HTTP.
