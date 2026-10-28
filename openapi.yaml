@@ -115,6 +115,12 @@ paths:
                     type: array
                     items: { $ref: "#/components/schemas/Listing" }
 
+        "400":
+          description: Invalid listing query parameter
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /v1/listings/{id}:
     get:
       summary: Fetch a listing and its moderation outcome

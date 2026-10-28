@@ -29,8 +29,16 @@ uses the submission service and PostgreSQL repository to atomically persist a
 pending listing, one queued moderation job, and an optional idempotency key.
 The repository resolves concurrent key races only after the losing transaction
 rolls back; a replay returns the persisted listing's current status. Submission
-does not evaluate moderation rules or create a decision/history record. GET
-listing routes and worker processing are implemented in later tasks.
+does not evaluate moderation rules or create a decision/history record. T05 adds
+GET one/list through the same `SubmissionModule` database registration. The read
+repository selects `price_vnd::text` and `decision::text`; one mapper validates
+the persisted state, parses decision JSON losslessly, and projects only public
+DTO fields before the shared JSON response interceptor serializes it. List SQL
+uses parameterized exact filters and `created_at DESC, id DESC`; `created_at`
+ordering retains PostgreSQL timestamp precision even though public ISO strings
+are formatted to milliseconds. Malformed known query encodings return 400 while
+malformed unknown extension values are ignored. Moderation policy evaluation, worker decision commit/recovery, and dynamic readiness belong to later tasks.
+
 The submission pipe checks persisted text fields before database access: title
 and description reject U+0000 and unpaired UTF-16 surrogates with 400; reference
 IDs containing those values return 422. Valid Unicode scalar text is stored

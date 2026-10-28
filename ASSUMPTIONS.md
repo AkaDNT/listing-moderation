@@ -1,6 +1,6 @@
 # Assumptions and decisions
 
-Status: T00–T04 transport/database/submission foundation implemented; read endpoints and moderation remain planned. Entries identify
+Status: T00–T05 transport/database/submission/read foundation implemented; moderation worker behavior remains planned. Entries identify
 planned or implemented behavior individually.
 Source labels below distinguish the normative OpenAPI/brief from owner decisions
 recorded in the local implementation plan. Q1–Q13 transcripts are not present;
@@ -226,3 +226,13 @@ ID after UTF-8 replacement. Keep exact JSON identity for fields not persisted.
 explicitly says. If product requirements need those code units as listing text,
 storage and every downstream reader/moderation path need a reversible string
 representation rather than PostgreSQL `text` binding.
+
+## A15 — GET listing query decoding
+
+**Ambiguity:** OpenAPI defines read filters and limit bounds but does not define malformed percent encoding, malformed UTF-8, duplicate query fields, or bracket-shaped query values.
+
+**Decision (owner-approved 2026-10-28; implemented and exercised through actual HTTP in T05):** Known query parameters (seller_id, status, limit) and recognized bracket variants use raw-query inspection before decoding. Malformed percent escapes or invalid UTF-8 in a known parameter return 400 invalid_request. A valid UTF-8 encoded literal U+FFFD remains an ordinary exact-match value. Unknown query parameters are ignored, including malformed values. Values use form-query semantics: raw + means space, %2B means plus; decode once only. Repeated known fields and known bracket variants return 400. Validate status and limit before an unrepresentable seller filter returns an empty list. seller_id=%00 is valid encoding but not representable by PostgreSQL text, so it yields 200 items:[] after other query validation. `limit` accepts decimal digits with numeric value 1–100 (including leading zeroes), defaults to 20. See T05 implementation plan and execution log for evidence and tested boundaries.
+
+**Rationale:** Prevent forgiving UTF-8 replacement from aliasing malformed selector bytes to a real U+FFFD identifier while preserving the existing policy of ignoring extension query parameters.
+
+**Cost of being wrong:** Clients sending malformed known selectors receive 400 rather than replacement-based lookup. Changing this later requires updating raw-boundary and HTTP tests together. Unknown fields remain outside strict decoding by design.
