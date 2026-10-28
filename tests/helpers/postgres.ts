@@ -1,6 +1,22 @@
 import { randomBytes } from 'node:crypto';
 import { Pool } from 'pg';
 
+const SESSION_RELEASE_TIMEOUT_MS = 1000;
+const SESSION_RELEASE_POLL_MS = 25;
+
+interface ActiveSession {
+  pid: number;
+  application_name: string;
+  state: string | null;
+  query: string;
+  wait_event_type: string | null;
+  wait_event: string | null;
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, milliseconds));
+}
+
 export interface TestDatabase {
   url: string;
   databaseName: string;
@@ -42,14 +58,25 @@ export async function createTestDatabase(): Promise<TestDatabase> {
       if (!created) throw new Error(`Refusing to dispose unowned PostgreSQL test database ${databaseName}`);
       let activeSessions = false;
       try {
-        const result = await admin.query<{ sessions: string }>(
-          'SELECT count(*)::text AS sessions FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()',
-          [databaseName],
-        );
-        const sessions = Number(result.rows[0]?.sessions ?? '0');
-        if (sessions !== 0) {
-          activeSessions = true;
-          throw new Error(`Refusing to drop ${databaseName}: ${sessions} PostgreSQL session(s) remain`);
+        const deadline = Date.now() + SESSION_RELEASE_TIMEOUT_MS;
+        let sessions: ActiveSession[] = [];
+        while (true) {
+          sessions = (await admin.query<ActiveSession>(
+            `SELECT pid, application_name, state, query, wait_event_type, wait_event
+             FROM pg_stat_activity
+             WHERE datname = $1 AND pid <> pg_backend_pid()
+             ORDER BY pid`,
+            [databaseName],
+          )).rows;
+          if (sessions.length === 0) break;
+          if (Date.now() >= deadline) {
+            activeSessions = true;
+            throw new Error(
+              `Refusing to drop ${databaseName}: ${sessions.length} PostgreSQL session(s) remain after ` +
+              `${SESSION_RELEASE_TIMEOUT_MS}ms: ${JSON.stringify(sessions)}`,
+            );
+          }
+          await delay(SESSION_RELEASE_POLL_MS);
         }
         await admin.query(`DROP DATABASE ${quotedName}`);
         disposed = true;

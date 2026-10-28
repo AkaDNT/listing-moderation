@@ -31,12 +31,29 @@ test('PostgreSQL fixture databases are isolated and disposable', async () => {
 
 test('fixture refuses to drop a database with a live application session', async () => {
   const database = await createTestDatabase();
-  const pool = new Pool({ connectionString: database.url, max: 1 });
+  const pool = new Pool({ connectionString: database.url, max: 1, application_name: 'fixture-live-session' });
   try {
     await pool.query('SELECT 1');
-    await assert.rejects(database.dispose(), /PostgreSQL session\(s\) remain/);
+    await assert.rejects(database.dispose(), /fixture-live-session.*idle.*SELECT 1/s);
   } finally {
     await pool.end();
+    await database.dispose();
+  }
+});
+
+test('fixture waits for a PostgreSQL session that is already being released', async () => {
+  const database = await createTestDatabase();
+  const pool = new Pool({ connectionString: database.url, max: 1, application_name: 'fixture-closing-session' });
+  let release: Promise<void> | undefined;
+  try {
+    await pool.query('SELECT 1');
+    const dispose = database.dispose();
+    release = new Promise(resolve => setTimeout(resolve, 100)).then(() => pool.end());
+    await assert.doesNotReject(dispose);
+    await release;
+  } finally {
+    if (!release) await pool.end();
+    else await release;
     await database.dispose();
   }
 });
