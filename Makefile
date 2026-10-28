@@ -14,3 +14,4 @@ test:
 
 smoke:
 	@sh tests/t01-smoke.sh
+	@sh tests/t02-startup-smoke.sh

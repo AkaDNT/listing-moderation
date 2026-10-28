@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { Pool } from 'pg';
 import { loadConfig } from '../src/config';
+import { createTestDatabase } from './helpers/postgres';
 
 const valid = {
   DATABASE_URL: 'postgres://moderator:secret@db:5432/listings',
@@ -52,10 +54,13 @@ test('runtime config factory validates configuration through production module w
 
 test('actual API HTTP entrypoint exposes the exact live contract and validates startup config', { skip: process.platform === 'win32' && 'Nest HTTP adapter lifecycle is exercised on Linux/WSL' }, async () => {
   const { createApi } = await import('../src/api');
-  const app = await createApi(valid);
-  const server = app.getHttpServer();
-  await app.listen(0, '127.0.0.1');
+  const fixture = await createTestDatabase();
+  const observer = new Pool({ connectionString: fixture.url });
+  let app: Awaited<ReturnType<typeof createApi>> | undefined;
   try {
+    app = await createApi({ ...valid, DATABASE_URL: fixture.url });
+    const server = app.getHttpServer();
+    await app.listen(0, '127.0.0.1');
     const address = server.address();
     assert.ok(address && typeof address !== 'string');
     const response = await fetch(`http://127.0.0.1:${address.port}/livez`, { headers: { connection: 'close' } });
@@ -65,8 +70,15 @@ test('actual API HTTP entrypoint exposes the exact live contract and validates s
     const readiness = await fetch(`http://127.0.0.1:${address.port}/readyz`, { headers: { connection: 'close' } });
     assert.equal(readiness.status, 404);
     await readiness.arrayBuffer();
+    const bootstrapped = await observer.query<{ sellers: string; migrations: string }>(
+      `SELECT (SELECT count(*)::text FROM sellers) AS sellers,
+              (SELECT count(*)::text FROM schema_migrations) AS migrations`,
+    );
+    assert.deepEqual(bootstrapped.rows[0], { sellers: '8', migrations: '1' });
   } finally {
-    await app.close();
+    await observer.end();
+    if (app) await app.close();
+    await fixture.dispose();
   }
   await assert.rejects(createApi({ ...valid, PORT: '0' }), /PORT/);
 });
@@ -74,16 +86,24 @@ test('actual API HTTP entrypoint exposes the exact live contract and validates s
 test('standalone worker entrypoint constructs with real config and exits on SIGTERM', { skip: process.platform === 'win32' && 'POSIX signal semantics are tested in WSL/Linux' }, async () => {
   const { spawn } = await import('node:child_process');
   const { resolve } = await import('node:path');
+  const fixture = await createTestDatabase();
   const worker = spawn(process.execPath, [resolve('dist/src/worker.js')], {
-    env: { ...process.env, ...valid, PORT: '8080' },
+    env: { ...process.env, ...valid, DATABASE_URL: fixture.url, PORT: '8080' },
     stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
   });
+  const observer = new Pool({ connectionString: fixture.url });
   try {
-    await new Promise<void>((resolveReady, reject) => {
+    const message = await new Promise<unknown>((resolveReady, reject) => {
       const timeout = setTimeout(() => reject(new Error('worker startup timeout')), 30000);
-      worker.once('message', () => { clearTimeout(timeout); resolveReady(); });
+      worker.once('message', (value) => { clearTimeout(timeout); resolveReady(value); });
       worker.once('error', reject);
     });
+    assert.deepEqual(message, { event: 'worker-started' });
+    const bootstrapped = await observer.query<{ sellers: string; migrations: string }>(
+      `SELECT (SELECT count(*)::text FROM sellers) AS sellers,
+              (SELECT count(*)::text FROM schema_migrations) AS migrations`,
+    );
+    assert.deepEqual(bootstrapped.rows[0], { sellers: '8', migrations: '1' });
     const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolveExit) =>
       worker.once('exit', (code, signal) => resolveExit({ code, signal })));
     worker.kill('SIGTERM');
@@ -91,5 +111,7 @@ test('standalone worker entrypoint constructs with real config and exits on SIGT
     assert.equal(result.code, 0);
   } finally {
     if (worker.exitCode === null) worker.kill('SIGKILL');
+    await observer.end();
+    await fixture.dispose();
   }
 });

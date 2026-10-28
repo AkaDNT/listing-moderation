@@ -1,6 +1,8 @@
 # Assumptions and decisions
 
-Status: design baseline for T00; application behavior is not implemented yet.
+Status: T00–T02 foundation implemented; moderation and public listing behavior
+remain planned for later tasks. Entries A1–A10 describe owner decisions or
+assumptions for later tasks, not behavior already implemented.
 Source labels below distinguish the normative OpenAPI/brief from owner decisions
 recorded in the local implementation plan. Q1–Q13 transcripts are not present;
 the plan's summary is the available record. Revisit entries if implementation
@@ -105,3 +107,25 @@ or new requirements change the decision.
 **Rationale:** Prevent silent rounding and avoid requiring price strings absent from OpenAPI.
 
 **Cost of being wrong:** Additional transport complexity; clients using ordinary floating-point JSON parsers may still lose precision locally.
+
+## A11 — Bootstrap and seed lifecycle
+
+**Ambiguity:** The plan permits either a dedicated migration runner or API/worker
+startup bootstrap, and does not define how rows outside the seed files are handled.
+
+**Decision:** Use the owner-selected `pg` plus versioned SQL approach. API and
+worker acquire PostgreSQL transaction advisory lock `(74201, 2)`, apply the
+explicit migration manifest, validate checksums, and upsert seed-file rows in
+one transaction before starting. Seed rows absent from the files are preserved.
+Connection establishment/handshake times out after five seconds. Startup also
+waits up to five seconds to acquire the bootstrap lock, then fails
+without accepting traffic if bootstrap fails. Migration-history edits require a
+new migration; automatic rollback/reset is not performed.
+These are separate limits, not a total migration/seed execution deadline or
+evidence that the full cold-machine startup gate has passed.
+
+**Rationale:** Keep API and worker on the same startup path, prevent races on a
+fresh database, and avoid deleting data during recovery.
+
+**Cost of being wrong:** A stale extra reference row remains available to later
+business logic until explicitly removed by a separately reviewed migration.

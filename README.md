@@ -1,16 +1,19 @@
 # Listing Moderation Service
 
-## Local lifecycle (T01)
+## Local lifecycle
 
 The API and standalone worker run in Docker containers alongside PostgreSQL 16.
-The API exposes `GET /livez`; this reports process liveness only. Database/schema
+Before the API starts listening or the worker announces startup, both processes
+connect to PostgreSQL, acquire the shared transaction-scoped bootstrap lock,
+apply pending checksummed SQL migrations, and upsert the reference seed data.
+The API exposes `GET /livez`, which reports process liveness. Dynamic database
 readiness and listing routes are added in later tasks.
 
 ```sh
 make run                 # foreground; API at http://localhost:8080
 PORT=8081 make run       # publish the API at http://localhost:8081
 make test                # build and run the isolated containerized suite
-make smoke               # Docker-backed T01 lifecycle and build-context checks
+make smoke               # Docker-backed lifecycle, asset packaging and restart checks
 ```
 
 `make run` keeps its workspace-specific named database volume across normal
@@ -18,6 +21,9 @@ shutdowns. `make test` uses an invocation-specific Compose project and removes
 only that project's verified-owned test volume after the runner exits. Both
 commands refuse pre-existing containers and networks for the selected project;
 `make run` reuses its database volume only when its workspace/mode labels match.
+The first run creates the T02 schema and loads 8 sellers, 5 categories, and 6
+banned keywords from `seed/`. Later starts verify migration checksums and
+restore seed rows from those files. Rows outside the seed files are preserved.
 If the lifecycle lock is left behind after a forced kill or machine crash, inspect
 the PID file and Docker resources before removing the stale lock directory under
 `${TMPDIR:-/tmp}`.

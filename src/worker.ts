@@ -2,6 +2,9 @@ import { Injectable, Module, OnApplicationShutdown } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { loadConfig } from './config';
 import { RuntimeModule } from './runtime.module';
+import { BootstrapAssets, loadBootstrapAssets } from './db/assets';
+import { Database } from './db/database';
+import { DatabaseModule, DATABASE } from './db/database.module';
 
 @Injectable()
 class WorkerLifecycle implements OnApplicationShutdown {
@@ -9,13 +12,25 @@ class WorkerLifecycle implements OnApplicationShutdown {
   onApplicationShutdown() { clearInterval(this.timer); }
 }
 
-export async function bootstrapWorker(env: NodeJS.ProcessEnv = process.env) {
-  loadConfig(env);
-  @Module({ imports: [RuntimeModule.register(env)], providers: [WorkerLifecycle] })
+export async function bootstrapWorker(env: NodeJS.ProcessEnv = process.env, suppliedAssets?: BootstrapAssets) {
+  const config = loadConfig(env);
+  const assets = suppliedAssets ?? await loadBootstrapAssets();
+  const database = await Database.open(config.databaseUrl, assets);
+  @Module({ imports: [RuntimeModule.register(env), DatabaseModule.register(database)], providers: [WorkerLifecycle] })
   class WorkerModule {}
-  const app = await NestFactory.createApplicationContext(WorkerModule, { logger: false, abortOnError: false });
-  app.get(WorkerLifecycle);
-  return app;
+  try {
+    const app = await NestFactory.createApplicationContext(WorkerModule, { logger: false, abortOnError: false });
+    app.get(WorkerLifecycle);
+    app.get(DATABASE);
+    return app;
+  } catch (startupError) {
+    try {
+      await database.close();
+    } catch (closeError) {
+      throw new AggregateError([startupError, closeError], 'Worker startup and database cleanup failed', { cause: startupError });
+    }
+    throw startupError;
+  }
 }
 
 if (require.main === module) {

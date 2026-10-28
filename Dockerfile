@@ -10,6 +10,7 @@ COPY tests ./tests
 COPY scripts ./scripts
 COPY openapi.yaml ./openapi.yaml
 COPY seed ./seed
+COPY migrations ./migrations
 RUN npm run build
 
 FROM build AS test
@@ -21,5 +22,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=build /app/dist/src ./dist/src
+COPY --from=build /app/seed ./seed
+COPY --from=build /app/migrations ./migrations
 EXPOSE 8080
 CMD ["node", "dist/src/api.js"]
