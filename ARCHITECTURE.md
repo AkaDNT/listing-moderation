@@ -37,7 +37,12 @@ DTO fields before the shared JSON response interceptor serializes it. List SQL
 uses parameterized exact filters and `created_at DESC, id DESC`; `created_at`
 ordering retains PostgreSQL timestamp precision even though public ISO strings
 are formatted to milliseconds. Malformed known query encodings return 400 while
-malformed unknown extension values are ignored. Moderation policy evaluation, worker decision commit/recovery, and dynamic readiness belong to later tasks.
+malformed unknown extension values are ignored. T06 adds a pure R1/R2/R4/R5
+evaluator and a read-only repository for persisted seller, category, and banned
+keyword snapshots. Normal non-trusted listings require an explicit R3 fact; T06
+does not query or commit R3. No route or worker job loop invokes this evaluator
+yet. Worker decision commit, claim/retry behavior, and dynamic readiness belong
+to later tasks.
 
 The submission pipe checks persisted text fields before database access: title
 and description reject U+0000 and unpaired UTF-16 surrogates with 400; reference

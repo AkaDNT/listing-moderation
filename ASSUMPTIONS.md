@@ -1,6 +1,7 @@
 # Assumptions and decisions
 
-Status: T00–T05 transport/database/submission/read foundation implemented; moderation worker behavior remains planned. Entries identify
+Status: T00–T06 transport/database/submission/read and pure moderation policy implemented;
+worker decision commit and recovery remain planned. Entries identify
 planned or implemented behavior individually.
 Source labels below distinguish the normative OpenAPI/brief from owner decisions
 recorded in the local implementation plan. Q1–Q13 transcripts are not present;
@@ -236,3 +237,13 @@ representation rather than PostgreSQL `text` binding.
 **Rationale:** Prevent forgiving UTF-8 replacement from aliasing malformed selector bytes to a real U+FFFD identifier while preserving the existing policy of ignoring extension query parameters.
 
 **Cost of being wrong:** Clients sending malformed known selectors receive 400 rather than replacement-based lookup. Changing this later requires updating raw-boundary and HTTP tests together. Unknown fields remain outside strict decoding by design.
+
+## A16 — R1 Unicode boundaries and phrase matching
+
+**Ambiguity:** The brief requires case-insensitive whole-term matching but does not define Unicode word characters, canonical-equivalent text, spacing within multiword terms, or the number/order of reasons for repeated matches.
+
+**Decision (owner-approved 2026-10-28; implemented and exercised by T06 Node 22 tests on 2026-10-28):** Normalize NFC copies of the seed term, title, and description for matching only. Treat Unicode Letter, Mark, Number, and Connector_Punctuation characters as word characters; a match must not have one of these characters immediately before or after the complete seed term. Use case-insensitive Unicode matching and escape each seed term as a literal. A multiword term matches its seed spelling with the same single U+0020 space; do not collapse whitespace. Match title and description independently. Produce one R1 reason per matched seed term, even if it occurs more than once or in both fields. Sort R1 reasons by deterministic ordinal order of the original seed terms. Preserve the original seed spelling in each reason message. Do not accent-strip, transliterate, or apply broader language-specific case folding.
+
+**Rationale:** This gives a reproducible Unicode boundary that does not split combining marks, underscores, or letters/numbers out of a word; NFC lets canonically equivalent text match without modifying persisted listing text. Literal phrase spacing avoids silently broadening seed policy. Stable per-term reasons preserve explainability and deterministic output.
+
+**Cost of being wrong:** This treats underscore as part of a word and requires exact seed phrase spacing; users expecting underscores as separators or flexible whitespace will not get an R1 match. Unicode case mappings outside simple case-insensitive matching, accent-insensitive matching, or another phrase policy would require explicit product agreement and boundary tests.
