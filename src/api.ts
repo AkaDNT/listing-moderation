@@ -3,10 +3,10 @@ import { NestFactory } from '@nestjs/core';
 import { loadConfig } from './config';
 import { RUNTIME_CONFIG, RuntimeModule } from './runtime.module';
 import { BootstrapAssets, loadBootstrapAssets } from './db/assets';
-import { DATABASE, DatabaseModule } from './db/database.module';
+import { DATABASE } from './db/database.module';
 import { Database } from './db/database';
-import { HttpTransportModule } from './http/http-transport.module';
 import { installHttpTransport } from './http/install-http-transport';
+import { SubmissionModule } from './submission/submission.module';
 
 export type HttpTransportInstaller = (app: INestApplication) => void;
 export type ApiInitializer = (app: INestApplication) => Promise<void>;
@@ -27,7 +27,7 @@ export async function createApi(
   const assets = suppliedAssets ?? await loadBootstrapAssets();
   const database = await Database.open(config.databaseUrl, assets);
   @Module({
-    imports: [RuntimeModule.register(env), DatabaseModule.register(database), HttpTransportModule],
+    imports: [RuntimeModule.register(env), SubmissionModule.register(database)],
     controllers: [LiveController],
   })
   class ApiModule {}

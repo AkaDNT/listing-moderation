@@ -1,7 +1,6 @@
 # Assumptions and decisions
 
-Status: T00–T03 transport/database foundation implemented; moderation and the
-public listing endpoints remain planned for later tasks. Entries identify
+Status: T00–T04 transport/database/submission foundation implemented; read endpoints and moderation remain planned. Entries identify
 planned or implemented behavior individually.
 Source labels below distinguish the normative OpenAPI/brief from owner decisions
 recorded in the local implementation plan. Q1–Q13 transcripts are not present;
@@ -42,7 +41,18 @@ or new requirements change the decision.
 
 **Ambiguity:** The brief requires a key, but OpenAPI specifies neither transport nor scope, optionality or retention.
 
-**Decision:** Per plan, use Idempotency-Key, globally scoped and retained for the supported listing lifetime. No key means a fresh submission. Same key and canonical body returns 200 with original ID and current status; different body returns 409. Invalid keys return 400. Header length/syntax and optional X-Idempotency-Key support remain to be fixed in T04.
+**Decision (T04 implementation):** `Idempotency-Key` is optional,
+globally scoped, case-sensitive, and retained with its listing for the supported
+listing lifetime. No canonical key means a fresh independent submission.
+Recognize only one canonical field line whose bare value matches
+`^[A-Za-z0-9._~-]{1,128}$`; reject invalid values and duplicate canonical field
+lines with 400. Do not trim or normalize the value in application code. Ignore
+`X-Idempotency-Key`; it is not an alias, including when the canonical header is
+present. This is a project policy, not a claim of full IETF Structured Field
+draft conformance. Same key and canonical body returns 200 with original ID and
+current status; changed body returns 409. No separate key TTL/cleanup is added.
+The HTTP parser may remove optional wire whitespace before application code sees
+the field value.
 
 **Rationale:** Avoid inventing a required body field. A unique DB key reserves submission atomically with listing/job creation.
 
@@ -52,7 +62,21 @@ or new requirements change the decision.
 
 **Ambiguity:** OpenAPI permits additional properties and does not define "same body".
 
-**Decision:** Per plan, accept harmless unknown properties, include all supplied JSON fields in canonical hashing, and persist only defined listing fields. Object key order and JSON formatting do not change identity; actual value differences do. Do not normalize user text as part of submission identity. Exact numeric canonicalization will be fixed with lossless transport in T03–T04.
+**Decision (T04 implementation):** Accept harmless unknown
+properties, include the complete supplied JSON object in canonical hashing, and
+persist only defined listing fields. Object key order and JSON formatting do not
+change identity; arrays retain order. Decoded strings are compared exactly with
+no trim, case-fold or Unicode normalization. Canonical object keys sort by
+JavaScript UTF-16 code-unit order. Canonical JSON strings use well-formed JSON
+escaping, preserving distinctions such as a lone surrogate versus U+FFFD in
+unknown fields. Numbers use exact mathematical value without JavaScript
+`Number`: equivalent decimal/exponent spellings compare equal, negative zero
+equals zero, adjacent unsafe integers remain distinct, and exponent
+normalization stays compact. `price_vnd` follows T03 strict integer-token
+syntax. Hashing uses SHA-256 over the deterministic typed representation.
+Submission strings that go into PostgreSQL text have the separate A14 policy.
+T04 unit and actual POST tests exercise canonicalization, keyed replay and
+changed unknown-field conflicts through production wiring.
 
 **Rationale:** Preserve the permissive schema while detecting meaningful request changes. Duplicate normalization is a separate policy.
 
@@ -107,7 +131,7 @@ is not implemented. Resolve and test that default in T10; do not change it in T0
 
 **Ambiguity:** OpenAPI uses integer/int64; ordinary JavaScript number parsing cannot represent its full range. Text length units need an explicit implementation convention. OAS 3.0.3 §4.4 defines integer syntax without fraction or exponent.
 
-**Decision (owner revised 2026-10-28; transport implemented in T03):** Accept price_vnd JSON integer tokens from 0 through 9223372036854775807 exactly; reject fraction/exponent tokens including 1000.0 and 1e3 with 400. This supersedes the earlier mathematical-integer choice after review against [OAS 3.0.3 §4.4](https://spec.openapis.org/oas/v3.0.3#data-types). Normalize integer-token -0 to output 0. The shared listing request pipe returns bigint; response serialization emits numeric tokens. Text bounds count Unicode code points. Unknown numeric fields retain full JSON grammar and precision. The public POST/GET listing endpoints and their conformance evidence remain T04/T05 work.
+**Decision (owner revised 2026-10-28; transport implemented in T03):** Accept price_vnd JSON integer tokens from 0 through 9223372036854775807 exactly; reject fraction/exponent tokens including 1000.0 and 1e3 with 400. This supersedes the earlier mathematical-integer choice after review against [OAS 3.0.3 §4.4](https://spec.openapis.org/oas/v3.0.3#data-types). Normalize integer-token -0 to output 0. The shared listing request pipe returns bigint; response serialization emits numeric tokens. Text bounds count Unicode code points. Unknown numeric fields retain full JSON grammar and precision. T04 actual POST tests and T05 actual GET one/list tests cover the public roundtrip through PostgreSQL and the production response serializer.
 
 **Rationale:** Prevent silent rounding and avoid requiring price strings absent from OpenAPI.
 
@@ -177,3 +201,28 @@ in Node 22/CommonJS and by actual production parser HTTP tests.
 **Cost of being wrong:** Clients sending compressed JSON, other media/charsets,
 or duplicate-key objects will be rejected; 400 for unsupported transport is a
 project choice and must be documented and exercised through actual HTTP.
+
+## A14 — JSON strings stored in PostgreSQL text
+
+**Ambiguity:** OpenAPI and the brief define listing strings and length bounds but
+do not state whether U+0000 or unpaired UTF-16 surrogates are accepted. The JSON
+parser accepts them, while PostgreSQL text cannot store U+0000 and UTF-8 binding
+cannot preserve an unpaired surrogate.
+
+**Decision (owner-approved 2026-10-28; T04 implementation):** For persisted
+`title` and `description`, reject U+0000 and unpaired UTF-16 surrogates with 400
+`invalid_request` before database work. Such `seller_id` and `category_id`
+values cannot identify a storable reference and return the documented 422
+`validation_error` for unknown references. Valid surrogate pairs and U+FFFD are
+accepted and persisted exactly. Unknown JSON properties are not stored in
+PostgreSQL text; preserve their complete values for canonical hashing, including
+U+0000 and unpaired surrogates. Do not trim, strip or replace these values.
+
+**Rationale:** Avoid returning 500 for unrepresentable input and prevent
+silently changing accepted title/description or matching a different reference
+ID after UTF-8 replacement. Keep exact JSON identity for fields not persisted.
+
+**Cost of being wrong:** This narrows accepted values beyond what OpenAPI
+explicitly says. If product requirements need those code units as listing text,
+storage and every downstream reader/moderation path need a reversible string
+representation rather than PostgreSQL `text` binding.

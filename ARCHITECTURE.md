@@ -23,9 +23,19 @@ timeout. The separate five-second `lock_timeout` limits bootstrap lock waits;
 neither setting is a total deadline for running migrations or seed SQL.
 
 The versioned SQL in `migrations/` creates the reference, listing, idempotency,
-job, and moderation-history tables and their persistence constraints. It does
-not implement listing submission, moderation decisions, worker claim/retry
-behavior, or dynamic readiness; those behaviors belong to later tasks.
+job, and moderation-history tables and their persistence constraints. The API's
+`POST /v1/listings` validates through the shared lossless JSON transport, then
+uses the submission service and PostgreSQL repository to atomically persist a
+pending listing, one queued moderation job, and an optional idempotency key.
+The repository resolves concurrent key races only after the losing transaction
+rolls back; a replay returns the persisted listing's current status. Submission
+does not evaluate moderation rules or create a decision/history record. GET
+listing routes and worker processing are implemented in later tasks.
+The submission pipe checks persisted text fields before database access: title
+and description reject U+0000 and unpaired UTF-16 surrogates with 400; reference
+IDs containing those values return 422. Valid Unicode scalar text is stored
+unchanged. Unknown JSON properties remain in the idempotency hash but are not
+written to PostgreSQL text columns.
 
 ## Transactions and ownership
 

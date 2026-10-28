@@ -7,7 +7,7 @@ Before the API starts listening or the worker announces startup, both processes
 connect to PostgreSQL, acquire the shared transaction-scoped bootstrap lock,
 apply pending checksummed SQL migrations, and upsert the reference seed data.
 The API exposes `GET /livez`, which reports process liveness. Dynamic database
-readiness and listing routes are added in later tasks.
+readiness and listing read routes are planned for later tasks. Listing submission is available as described below.
 
 ```sh
 make run                 # foreground; API at http://localhost:8080
@@ -27,8 +27,10 @@ restore seed rows from those files. Rows outside the seed files are preserved.
 The shared HTTP transport reads JSON without rounding integer tokens, validates
 listing request shapes through its production pipe, and emits bigint values as
 JSON numbers. It rejects request bodies over 1 MiB, nesting over 128 levels,
-duplicate keys, malformed UTF-8 and unsupported JSON media/encoding. The actual
-listing submission and read endpoints are added in T04/T05.
+duplicate keys, malformed UTF-8 and unsupported JSON media/encoding.
+`POST /v1/listings` atomically stores a pending listing and queued job,
+supports optional `Idempotency-Key` replay, and does not run moderation
+inline. Read endpoints and worker processing are later tasks.
 If the lifecycle lock is left behind after a forced kill or machine crash, inspect
 the PID file and Docker resources before removing the stale lock directory under
 `${TMPDIR:-/tmp}`.

@@ -27,6 +27,9 @@ export class ListingRequestPipe implements PipeTransform<unknown, ValidatedListi
     const description = requireString(request.description, 'description');
     const categoryId = requireString(request.category_id, 'category_id');
 
+    requirePostgresTextValue(title, 'title');
+    requirePostgresTextValue(description, 'description');
+
     const titleLength = Array.from(title).length;
     if (titleLength < 1 || titleLength > 200) {
       throw invalidRequest('title must contain 1 to 200 Unicode code points');
@@ -38,6 +41,10 @@ export class ListingRequestPipe implements PipeTransform<unknown, ValidatedListi
     let price: bigint;
     try { price = parsePriceInt64(request.price_vnd); }
     catch { throw invalidRequest('price_vnd must be an integer from 0 through 9223372036854775807'); }
+
+    if (!isPostgresTextValue(sellerId) || !isPostgresTextValue(categoryId)) {
+      throw new ApiError(422, 'validation_error', 'Unknown seller or category');
+    }
 
     return {
       seller_id: sellerId,
@@ -53,6 +60,27 @@ export class ListingRequestPipe implements PipeTransform<unknown, ValidatedListi
 function requireString(value: unknown, field: string): string {
   if (typeof value !== 'string') throw invalidRequest(`${field} must be a string`);
   return value;
+}
+
+function requirePostgresTextValue(value: string, field: string): void {
+  if (!isPostgresTextValue(value)) {
+    throw invalidRequest(`${field} must not contain NUL or unpaired UTF-16 surrogates`);
+  }
+}
+
+function isPostgresTextValue(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit === 0) return false;
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (index + 1 >= value.length || next < 0xdc00 || next > 0xdfff) return false;
+      index += 1;
+    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function invalidRequest(message: string): ApiError {
