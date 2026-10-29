@@ -37,9 +37,11 @@ test('production R1 boundaries use NFC and Unicode word characters, with literal
   assert.equal(typeof matcher.matchBannedTerms, 'function', 'production R1 matcher must be available');
   const matches = (title: string, terms = ['fake']) => matcher.matchBannedTerms!(title, '', terms).length > 0;
   for (const title of ['fake', '(fake)', 'fake!', 'FAKE']) assert.equal(matches(title), true, title);
-  for (const title of ['replicas', 'myreplica', 'éfakex', 'fake\u0301', '_fake_', 'fake2']) {
+  for (const title of ['éfakex', 'fake\u0301', '_fake_', 'fake2']) {
     assert.equal(matches(title, ['fake']), false, title);
   }
+  for (const title of ['replicas', 'myreplica']) assert.equal(matches(title, ['replica']), false, title);
+  for (const title of ['replica', '(replica)']) assert.equal(matches(title, ['replica']), true, title);
 
   assert.equal(matches('(hang gia)', ['hang gia']), true);
   for (const title of ['hang  gia', 'hang\tgia', 'hang\u00a0gia', 'hang\ngia']) {

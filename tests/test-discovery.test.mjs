@@ -31,8 +31,10 @@ test('the registered runner executes a new test file and rejects an empty suite'
       "import { writeFileSync } from 'node:fs'; writeFileSync(process.env.DISCOVERY_MARKER, 'executed');\n");
     const runner = resolve('scripts/test-runner.mjs');
     const { NODE_TEST_CONTEXT: _testContext, ...parentEnv } = process.env;
+    // This positive child contract must not inherit the outer smoke's fault flag.
+    const childEnv = { ...parentEnv, TEST_FORCE_FAILURE: '0' };
     const result = spawnSync(process.execPath, [runner], {
-      env: { ...parentEnv, TEST_DISCOVERY_ROOT: root, DISCOVERY_MARKER: marker }, encoding: 'utf8',
+      env: { ...childEnv, TEST_DISCOVERY_ROOT: root, DISCOVERY_MARKER: marker }, encoding: 'utf8',
     });
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /created-during-test\.test\.mjs/);
@@ -42,7 +44,7 @@ test('the registered runner executes a new test file and rejects an empty suite'
     const empty = await mkdtemp(join(tmpdir(), 'listing-empty-suite-'));
     try {
       const emptyResult = spawnSync(process.execPath, [runner], {
-        env: { ...parentEnv, TEST_DISCOVERY_ROOT: empty }, encoding: 'utf8',
+        env: { ...childEnv, TEST_DISCOVERY_ROOT: empty }, encoding: 'utf8',
       });
       assert.equal(emptyResult.status, 1);
       assert.match(emptyResult.stderr, /No supported test files/);

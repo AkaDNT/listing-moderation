@@ -120,7 +120,7 @@ test('T11 requeue SQL checks its pending, history, attempts, diagnostic, pair an
 
 test('T11 published guarded requeue SQL rejects stale inspection and requeues exact pending job', async () => {
   const sql = await readFile(resolve('ops/requeue-failed-job.sql'), 'utf8');
-  assert.match(sql, /\nBEGIN;\n/);
+  assert.match(sql, /^BEGIN;\r?$/m);
   assert.doesNotMatch(sql, /^COMMIT;/m);
   const steps = sql.split(/-- T11 STEP \d:[^\n]*\n/).slice(1).map(part => part.trim());
   assert.equal(steps.length, 3);
