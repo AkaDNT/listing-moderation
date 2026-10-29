@@ -17,7 +17,7 @@ Keep the implementation focused: production-quality correctness without unnecess
   not the entire plan for every small edit. Keep plan progress, execution logs,
   and internal review documents under ignored `.local-docs/`; do not require them
   for runtime, tests, or clean-clone execution.
-- `ASSUMPTIONS.md` (when present): owner-approved resolutions of ambiguous behavior.
+- `ASSUMPTIONS.md` (when present): recorded decisions and rationale for ambiguous requirements.
 - `ARCHITECTURE.md` (when present): documented component boundaries and trade-offs.
 - The original `BRIEF.md` is intentionally excluded from Git. Do not make runtime,
   test, or clean-clone workflows depend on that local file.
