@@ -64,6 +64,22 @@ export class Database {
     await this.query('SELECT 1');
   }
 
+  async readinessProbe(): Promise<void> {
+    this.assertOpen();
+    const client = await this.pool.connect();
+    let destroy = false;
+    try {
+      // pg 8.23.1 reads per-query query_timeout; @types/pg omits it from QueryConfig.
+      const probe = { text: 'SELECT 1', query_timeout: 1000 };
+      await client.query(probe);
+    } catch (error) {
+      destroy = true;
+      throw error;
+    } finally {
+      client.release(destroy || undefined);
+    }
+  }
+
   close(): Promise<void> {
     if (!this.closePromise) this.closePromise = this.pool.end();
     return this.closePromise;

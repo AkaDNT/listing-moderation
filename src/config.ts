@@ -34,6 +34,6 @@ export function loadConfig(_env: NodeJS.ProcessEnv = process.env): RuntimeConfig
     port,
     databaseUrl,
     pollIntervalMs,
-    listingTtlDays: integer('LISTING_TTL_DAYS', env.LISTING_TTL_DAYS),
+    listingTtlDays: integer('LISTING_TTL_DAYS', env.LISTING_TTL_DAYS, 30),
   };
 }

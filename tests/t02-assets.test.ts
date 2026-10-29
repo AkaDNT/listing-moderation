@@ -57,7 +57,7 @@ test('bootstrap assets load from the compiled app root with an explicit migratio
   assert.equal(typeof module.loadBootstrapAssets, 'function', 'T02 bootstrap asset loader must be available');
   const loaded = await module.loadBootstrapAssets!();
   assert.equal(loaded.seeds.sellers.length, 8);
-  assert.deepEqual(loaded.migrations.map(({ id }) => id), ['001_initial']);
+  assert.deepEqual(loaded.migrations.map(({ id }) => id), ['001_initial', '002_listing_expiry']);
   assert.match(loaded.migrations[0].checksum, /^[a-f0-9]{64}$/);
   assert.equal(loaded.migrations[0].checksum, module.checksumMigration!(loaded.migrations[0].sql));
 });

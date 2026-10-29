@@ -287,16 +287,16 @@ test('actual POST stays pending without a worker; registered worker loop later c
         'SELECT l.status,j.state AS job_state,' +
         "(SELECT count(*)::int FROM moderation_history h WHERE h.listing_id=l.id AND h.phase='auto') AS history_count " +
         'FROM listings l JOIN moderation_jobs j ON j.listing_id=l.id WHERE l.id=$1', [accepted.id]);
-      if (current.rows[0].job_state === 'completed') { committed = current.rows[0]; break; }
+      if (current.rows[0].job_state === 'completed' && current.rows[0].status === 'published') { committed = current.rows[0]; break; }
       await new Promise(resolve => setTimeout(resolve, 20));
     }
-    assert.deepEqual(committed, { status: 'auto_approved', job_state: 'completed', history_count: 1 });
+    assert.deepEqual(committed, { status: 'published', job_state: 'completed', history_count: 1 });
     const get = await fetch(base + '/v1/listings/' + encodeURIComponent(accepted.id), {
       headers: { connection: 'close' }, signal: AbortSignal.timeout(5000),
     });
     assert.equal(get.status, 200);
     const body = parseJson(await get.text()) as { id: string; status: string; decision: { outcome: string; reasons: unknown[] }; decided_at: string };
-    assert.equal(body.id, accepted.id); assert.equal(body.status, 'auto_approved');
+    assert.equal(body.id, accepted.id); assert.equal(body.status, 'published');
     assert.equal(body.decision.outcome, 'approved'); assert.deepEqual(body.decision.reasons, []);
     assert.ok(Number.isFinite(Date.parse(body.decided_at)));
   } catch (error) { primary = error; }
@@ -525,7 +525,8 @@ test('attempt five running lease recovery exhausts without issuing a sixth claim
          lease_until=clock_timestamp()-interval '1 millisecond' WHERE listing_id=$1 RETURNING id`, [listingId, token]);
     const repository = jobs(database);
     const result = await repository.claimNext();
-    assert.deepEqual(result, { kind: 'exhausted', jobId: job.rows[0].id });
+    assert.deepEqual(result, { kind: 'exhausted', jobId: job.rows[0].id,
+      listingId, attempt: 5, diagnostic: 'max_claims_exhausted' });
     assert.equal((await repository.claimNext()).kind, 'idle');
     const state = await database.query<{ state: string; attempts: number; claim_token: string | null; lease_until: Date | null; last_error: string }>(
       'SELECT state,attempts,claim_token,lease_until,last_error FROM moderation_jobs WHERE id=$1', [job.rows[0].id]);
@@ -545,7 +546,8 @@ test('queued attempt five is exhausted without a new claim', async () => {
       `UPDATE moderation_jobs SET attempts=5,available_at=clock_timestamp()-interval '1 millisecond'
        WHERE listing_id=$1 RETURNING id`, [listingId]);
     const repository = jobs(database);
-    assert.deepEqual(await repository.claimNext(), { kind: 'exhausted', jobId: job.rows[0].id });
+    assert.deepEqual(await repository.claimNext(), { kind: 'exhausted', jobId: job.rows[0].id,
+      listingId, attempt: 5, diagnostic: 'max_claims_exhausted' });
     assert.equal((await repository.claimNext()).kind, 'idle');
     const state = await database.query<{ state: string; attempts: number }>(
       'SELECT state,attempts FROM moderation_jobs WHERE id=$1', [job.rows[0].id]);

@@ -71,10 +71,17 @@ assert_bootstrap_and_persisted_rows() {
   [ -n "$db_id" ] && [ -n "$worker_id" ] && [ -n "$api_id" ] || fail 'runtime API, worker, or PostgreSQL container is not running'
   counts=$(docker exec "$db_id" psql -U moderator -d listings -tAc \
     "SELECT (SELECT count(*) FROM sellers)||'|'||(SELECT count(*) FROM categories)||'|'||(SELECT count(*) FROM banned_keywords)||'|'||(SELECT count(*) FROM schema_migrations)")
-  [ "$counts" = '8|5|6|1' ] || fail "runtime image loaded unexpected schema/seed counts: $counts"
-  persisted=$(docker exec "$db_id" psql -U moderator -d listings -tAc \
-    "SELECT (SELECT count(*) FROM listings l JOIN submission_keys k ON k.listing_id=l.id JOIN moderation_jobs j ON j.listing_id=l.id WHERE l.id='$listing_id' AND k.key='$idempotency_key')||'|'||(SELECT count(*) FROM listings WHERE id='$decision_id' AND status='auto_approved' AND decision->>'outcome'='approved')||'|'||(SELECT count(*) FROM moderation_history WHERE listing_id='$decision_id' AND phase='auto')||'|'||(SELECT count(*) FROM moderation_jobs WHERE listing_id='$decision_id' AND state='completed')")
-  [ "$persisted" = '1|1|1|1' ] || fail "expected listing/key/job/decision/history did not survive restart: $persisted"
+  [ "$counts" = '8|5|6|2' ] || fail "runtime image loaded unexpected schema/seed counts: $counts"
+  attempt=0
+  persisted=
+  while [ "$attempt" -lt 100 ]; do
+    persisted=$(docker exec "$db_id" psql -U moderator -d listings -tAc \
+      "SELECT (SELECT count(*) FROM listings l JOIN submission_keys k ON k.listing_id=l.id JOIN moderation_jobs j ON j.listing_id=l.id WHERE l.id='$listing_id' AND k.key='$idempotency_key')||'|'||(SELECT COALESCE(max(status),'missing') FROM listings WHERE id='$decision_id' AND decision->>'outcome'='approved')||'|'||(SELECT count(*) FROM moderation_history WHERE listing_id='$decision_id' AND phase='auto')||'|'||(SELECT count(*) FROM moderation_jobs WHERE listing_id='$decision_id' AND state='completed')")
+    [ "$persisted" = '1|published|1|1' ] && break
+    sleep 0.1
+    attempt=$((attempt + 1))
+  done
+  [ "$persisted" = '1|published|1|1' ] || fail "expected listing/key/job/decision/history and eventual publication after restart: $persisted"
 }
 
 start_run

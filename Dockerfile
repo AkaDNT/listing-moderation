@@ -9,8 +9,10 @@ COPY src ./src
 COPY tests ./tests
 COPY scripts ./scripts
 COPY openapi.yaml ./openapi.yaml
+COPY compose.yaml ./compose.yaml
 COPY seed ./seed
 COPY migrations ./migrations
+COPY ops ./ops
 RUN npm run build
 
 FROM build AS test

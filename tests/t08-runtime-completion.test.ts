@@ -16,8 +16,14 @@ test('T08 actual worker recovers after both apply and retry persistence are reje
       IF OLD.state='running' AND NEW.state='queued' THEN RAISE EXCEPTION USING ERRCODE='P0001',MESSAGE='private-retry password=secret'; END IF; RETURN NEW; END $$`);
     await s.database.query('CREATE TRIGGER t08_reject_retry BEFORE UPDATE ON moderation_jobs FOR EACH ROW EXECUTE FUNCTION t08_reject_retry()');
     const first = await s.child();
-    await until(async () => first.errors(), text => text.includes('worker_job_recovery_write_failed'));
-    assert.match(first.errors(), /database_error:P0001/);
+    const recoveryLine = await until(async () => first.errors().split('\n')
+      .find(line => line.includes('worker_job_recovery_write_failed') && line.includes(id)), line => line !== undefined);
+    assert.ok(recoveryLine);
+    const recoveryEvent = JSON.parse(recoveryLine) as Record<string, unknown>;
+    assert.equal(recoveryEvent.listing_id, id);
+    assert.equal(recoveryEvent.phase, 'auto');
+    assert.equal(recoveryEvent.diagnostic, 'database_error:P0001');
+    assert.doesNotMatch(recoveryLine, /private-body|private-retry|password|secret/);
     assert.doesNotMatch(first.errors(), /private-body|private-retry|password|secret/);
     await stop(first.process);
     await pending(s.observer, id);
@@ -27,8 +33,8 @@ test('T08 actual worker recovers after both apply and retry persistence are reje
     await s.child();
     const row = await until(async () => (await s.observer.query(`SELECT j.state,j.attempts,l.status,l.version::text AS version,
       (SELECT count(*)::int FROM moderation_history WHERE listing_id=l.id) AS history_count
-      FROM listings l JOIN moderation_jobs j ON j.listing_id=l.id WHERE l.id=$1`, [id])).rows[0], value => value.state === 'completed');
-    assert.deepEqual(row, { state: 'completed', attempts: 2, status: 'auto_approved', version: '1', history_count: 1 });
+      FROM listings l JOIN moderation_jobs j ON j.listing_id=l.id WHERE l.id=$1`, [id])).rows[0], value => value.state === 'completed' && value.status === 'published');
+    assert.deepEqual(row, { state: 'completed', attempts: 2, status: 'published', version: '2', history_count: 1 });
   });
 });
 
@@ -41,15 +47,23 @@ test('T08 actual worker retries transient failure automatically with safe diagno
       IF (SELECT enabled FROM t08_fault) THEN RAISE EXCEPTION USING ERRCODE='40001',MESSAGE='private secret'; END IF; RETURN NEW; END $$`);
     await s.database.query('CREATE TRIGGER t08_transient BEFORE INSERT ON moderation_history FOR EACH ROW EXECUTE FUNCTION t08_transient()');
     const child = await s.child('40');
-    await until(async () => child.errors(), text => text.includes('worker_job_attempt_failed'));
-    assert.match(child.errors(), /"recovery":"retried"/);
+    const attemptLine = await until(async () => child.errors().split('\n')
+      .find(line => line.includes('worker_job_attempt_failed') && line.includes(id)), line => line !== undefined);
+    assert.ok(attemptLine);
+    const attemptEvent = JSON.parse(attemptLine) as Record<string, unknown>;
+    assert.equal(attemptEvent.listing_id, id);
+    assert.equal(attemptEvent.phase, 'auto');
+    assert.equal(attemptEvent.recovery, 'retried');
+    assert.equal(attemptEvent.diagnostic, 'database_error:40001');
+    assert.doesNotMatch(attemptLine, /private|secret/);
     assert.doesNotMatch(child.errors(), /private|secret/);
     await s.database.query('UPDATE t08_fault SET enabled=false');
-    const row = await until(async () => (await s.observer.query(`SELECT j.state,j.attempts,j.last_error,l.version::text AS version,
+    const row = await until(async () => (await s.observer.query(`SELECT j.state,j.attempts,j.last_error,l.version::text AS version,l.status,
       (SELECT count(*)::int FROM moderation_history WHERE listing_id=l.id) AS history_count
-      FROM listings l JOIN moderation_jobs j ON j.listing_id=l.id WHERE l.id=$1`, [id])).rows[0], value => value.state === 'completed');
+      FROM listings l JOIN moderation_jobs j ON j.listing_id=l.id WHERE l.id=$1`, [id])).rows[0], value => value.state === 'completed' && value.status === 'published');
     assert.ok(row.attempts >= 2 && row.attempts <= 5);
-    assert.equal(row.last_error, null); assert.equal(row.version, '1'); assert.equal(row.history_count, 1);
+    assert.equal(row.last_error, null); assert.equal(row.version, '2'); assert.equal(row.history_count, 1);
+    assert.equal(row.status, 'published');
   });
 });
 
@@ -102,7 +116,7 @@ test('T08 actual POST standalone worker GET one/list preserve all outcomes and u
     assert.ok(address && typeof address !== 'string');
     const base = 'http://127.0.0.1:' + address.port;
     const cases = [
-      { seller: 's-1002', title: 'T08 public approved', price: '6000000', status: 'auto_approved', outcome: 'approved', rules: [] },
+      { seller: 's-1002', title: 'T08 public approved', price: '6000000', status: 'published', outcome: 'approved', rules: [] },
       { seller: 's-1001', title: 'T08 public fake', price: '6000000', status: 'auto_rejected', outcome: 'rejected', rules: ['R1'] },
       { seller: 's-1004', title: 'T08 public needs review', price: '6000000', status: 'needs_human', outcome: 'escalated', rules: ['R5'] },
       { seller: 's-1002', title: 'T08 public unsafe integer', price: '9007199254740993', status: 'needs_human', outcome: 'escalated', rules: ['R2'] },
@@ -125,6 +139,8 @@ test('T08 actual POST standalone worker GET one/list preserve all outcomes and u
     await s.child();
     await until(async () => (await s.observer.query("SELECT count(*)::int AS n FROM moderation_jobs WHERE listing_id=ANY($1::text[]) AND state='completed'", [ids])).rows[0].n,
       value => value === cases.length);
+    await until(async () => (await s.observer.query("SELECT count(*)::int AS n FROM listings WHERE id=ANY($1::text[]) AND status='auto_approved'", [ids])).rows[0].n,
+      value => value === 0);
     const listResponse = await fetch(base + '/v1/listings?limit=100', { headers: { connection: 'close' }, signal: AbortSignal.timeout(5000) });
     assert.equal(listResponse.status, 200);
     const listRaw = await listResponse.text();
@@ -159,7 +175,8 @@ test('T08 actual POST standalone worker GET one/list preserve all outcomes and u
       const audit = (await s.observer.query(`SELECT l.status,j.state,j.attempts,l.version::text AS version,
         h.phase,h.decision=l.decision AS same_decision,h.decided_at=l.decided_at AS same_time
         FROM listings l JOIN moderation_jobs j ON j.listing_id=l.id JOIN moderation_history h ON h.listing_id=l.id WHERE l.id=$1`, [ids[index]])).rows;
-      assert.deepEqual(audit, [{ status: item.status, state: 'completed', attempts: 1, version: '1', phase: 'auto', same_decision: true, same_time: true }]);
+      assert.deepEqual(audit, [{ status: item.status, state: 'completed', attempts: 1,
+        version: item.status === 'published' ? '2' : '1', phase: 'auto', same_decision: true, same_time: true }]);
     }
   });
 });
@@ -182,8 +199,10 @@ test('T08 real worker R3 wait chain serializes duplicates while terminal R1 and 
     await control.query('SELECT pg_advisory_unlock($1::bigint)', [identity.lockKey]);
     await until(async () => (await s.observer.query("SELECT count(*)::int AS n FROM moderation_jobs WHERE listing_id=ANY($1::text[]) AND state='completed'", [[firstId, secondId]])).rows[0].n,
       value => value === 2);
+    await until(async () => (await s.observer.query("SELECT count(*)::int AS n FROM listings WHERE id=ANY($1::text[]) AND status='auto_approved'", [[firstId, secondId]])).rows[0].n,
+      value => value === 0);
     const states = (await s.observer.query(`SELECT status FROM listings WHERE id=ANY($1::text[]) ORDER BY status`, [[firstId, secondId]])).rows;
-    assert.deepEqual(states.map(row => row.status), ['auto_approved', 'auto_rejected']);
+    assert.deepEqual(states.map(row => row.status), ['auto_rejected', 'published']);
     await stop(a.process); await stop(b.process);
     const terminalIds: string[] = [];
     for (const [terminalTitle, seller] of [['T08 fake terminal held key','s-1002'], ['T08 trusted terminal held key','s-1005']]) {
@@ -197,6 +216,9 @@ test('T08 real worker R3 wait chain serializes duplicates while terminal R1 and 
       value => value === 2);
     const reasons = (await s.observer.query(`SELECT id,status,decision->'reasons'->0->>'rule_id' AS rule FROM listings WHERE id=ANY($1::text[])`, [terminalIds])).rows;
     assert.deepEqual(reasons.find(row => row.id === terminalIds[0]), { id: terminalIds[0], status: 'auto_rejected', rule: 'R1' });
-    assert.deepEqual(reasons.find(row => row.id === terminalIds[1]), { id: terminalIds[1], status: 'auto_approved', rule: 'R4' });
+    const publishedTrusted = await until(async () => (await s.observer.query<{ status: string; rule: string }>(
+      `SELECT id,status,decision->'reasons'->0->>'rule_id' AS rule FROM listings WHERE id=$1`, [terminalIds[1]])).rows[0],
+      row => row.status === 'published');
+    assert.deepEqual(publishedTrusted, { id: terminalIds[1], status: 'published', rule: 'R4' });
   });
 });

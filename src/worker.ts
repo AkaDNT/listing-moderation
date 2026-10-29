@@ -9,6 +9,9 @@ import { RuntimeConfig } from './config';
 import { RUNTIME_CONFIG } from './runtime.module';
 import { ModerationJobRepository } from './worker/moderation-job.repository';
 import { WorkerLoop } from './worker/worker-loop';
+import { PublicationRepository } from './lifecycle/publication.repository';
+import { ExpiryRepository } from './lifecycle/expiry.repository';
+import { sanitizeWorkerError } from './worker/job-policy';
 
 @Injectable()
 class WorkerLifecycle implements OnApplicationBootstrap, BeforeApplicationShutdown {
@@ -25,7 +28,9 @@ export async function bootstrapWorker(env: NodeJS.ProcessEnv = process.env, supp
     imports: [RuntimeModule.register(env), DatabaseModule.register(database)],
     providers: [
       { provide: 'WORKER_LOOP', useFactory: (db: Database, runtime: RuntimeConfig) =>
-        new WorkerLoop(new ModerationJobRepository(db), runtime.pollIntervalMs), inject: [DATABASE, RUNTIME_CONFIG] },
+        new WorkerLoop(new ModerationJobRepository(db), new PublicationRepository(db, runtime.listingTtlDays),
+          new ExpiryRepository(db), runtime.pollIntervalMs),
+        inject: [DATABASE, RUNTIME_CONFIG] },
       WorkerLifecycle,
     ],
   })
@@ -54,12 +59,15 @@ if (require.main === module) {
         if (closing) return;
         closing = true;
         void app.close().then(() => { process.exitCode = 0; }).catch((error) => {
-          console.error(error);
+          console.error(JSON.stringify({ event: 'worker_shutdown_failed', diagnostic: sanitizeWorkerError(error) }));
           process.exitCode = 1;
         });
       };
       process.once('SIGTERM', shutdown);
       process.once('SIGINT', shutdown);
     })
-    .catch((error) => { console.error(error); process.exitCode = 1; });
+    .catch((error) => {
+      console.error(JSON.stringify({ event: 'worker_startup_failed', diagnostic: sanitizeWorkerError(error) }));
+      process.exitCode = 1;
+    });
 }

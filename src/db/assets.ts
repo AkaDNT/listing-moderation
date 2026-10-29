@@ -33,7 +33,7 @@ export interface BootstrapAssets {
   migrations: Migration[];
 }
 
-const MIGRATION_IDS = ['001_initial'] as const;
+const MIGRATION_IDS = ['001_initial', '002_listing_expiry'] as const;
 
 function asRecord(value: unknown, context: string): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {

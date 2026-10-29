@@ -42,7 +42,7 @@ export async function scope(run: (s: {
   claim(): Promise<ModerationJobClaim>;
   snapshot(id: string): Promise<unknown>;
   control(): Promise<PoolClient>;
-  child(interval?: string): Promise<{ process: ChildProcess; errors: () => string }>;
+  child(interval?: string, ttlDays?: string | null): Promise<{ process: ChildProcess; errors: () => string; logs: () => string }>;
   defer(cleanup: () => Promise<unknown>): void;
 }) => Promise<void>): Promise<void> {
   const fixture = await createTestDatabase();
@@ -78,11 +78,16 @@ export async function scope(run: (s: {
         cleanups.push(async () => { try { await client.query('ROLLBACK'); await client.query('SELECT pg_advisory_unlock_all()'); } finally { client.release(); } });
         return client;
       },
-      async child(interval = '10') {
+      async child(interval = '10', ttlDays: string | null = '30') {
+        const childEnv: NodeJS.ProcessEnv = { ...process.env, DATABASE_URL: fixture.url, POLL_INTERVAL_MS: interval };
+        if (ttlDays === null) delete childEnv.LISTING_TTL_DAYS;
+        else childEnv.LISTING_TTL_DAYS = ttlDays;
         const child = spawn(process.execPath, [resolve('dist/src/worker.js')], {
-          env: { ...process.env, DATABASE_URL: fixture.url, POLL_INTERVAL_MS: interval, LISTING_TTL_DAYS: '30' },
-          stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
+          env: childEnv,
+          stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
         });
+        let stdout = '';
+        child.stdout!.on('data', data => { stdout = (stdout + String(data)).slice(-32000); });
         let stderr = '';
         child.stderr!.on('data', data => { stderr = (stderr + String(data)).slice(-32000); });
         cleanups.push(() => stop(child));
@@ -94,7 +99,7 @@ export async function scope(run: (s: {
           const error = (value: Error) => { finish(); reject(value); };
           child.on('message', message); child.once('exit', exit); child.once('error', error);
         });
-        return { process: child, errors: () => stderr };
+        return { process: child, errors: () => stderr, logs: () => stdout };
       },
       defer(cleanup) { cleanups.push(cleanup); },
     });

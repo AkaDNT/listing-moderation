@@ -26,7 +26,7 @@ test('database bootstrap migrates and seeds exact starter data, then reruns with
               (SELECT count(*) FROM banned_keywords)::text AS banned_keywords,
               (SELECT count(*) FROM schema_migrations)::text AS migrations`,
     );
-    assert.deepEqual(counts.rows[0], { sellers: '8', categories: '5', banned_keywords: '6', migrations: '1' });
+    assert.deepEqual(counts.rows[0], { sellers: '8', categories: '5', banned_keywords: '6', migrations: '2' });
     const seller = await database.query<{ name: string; trust_score: number; verified: boolean; note: string }>(
       "SELECT name,trust_score,verified,note FROM sellers WHERE id='s-1001'",
     );
@@ -55,14 +55,14 @@ test('database bootstrap migrates and seeds exact starter data, then reruns with
               (SELECT count(*)::text FROM sellers WHERE id='owner-extra') AS extra,
               (SELECT count(*)::text FROM schema_migrations) AS migrations`,
     );
-    assert.deepEqual(rows.rows[0], { trust_score: 92, retained: '1', extra: '1', migrations: '1' });
+    assert.deepEqual(rows.rows[0], { trust_score: 92, retained: '1', extra: '1', migrations: '2' });
   } finally {
     await database.close();
     await fixture.dispose();
   }
 });
 
-test('concurrent Database.open calls serialize migration and seed with one ledger row', async () => {
+test('concurrent Database.open calls serialize migration and seed with one row per manifest entry', async () => {
   const modulePath = '../src/db/database';
   const databaseModule = await import(modulePath).catch(() => ({} as DatabaseModuleContract)) as DatabaseModuleContract;
   assert.equal(typeof databaseModule.Database?.open, 'function', 'T02 production Database bootstrap must be available');
@@ -77,7 +77,7 @@ test('concurrent Database.open calls serialize migration and seed with one ledge
       const result = await opened[0].query<{ ledger: string; sellers: string }>(
         'SELECT (SELECT count(*)::text FROM schema_migrations) AS ledger, (SELECT count(*)::text FROM sellers) AS sellers',
       );
-      assert.deepEqual(result.rows[0], { ledger: '1', sellers: '8' }, `concurrent bootstrap attempt ${attempt + 1}`);
+      assert.deepEqual(result.rows[0], { ledger: '2', sellers: '8' }, `concurrent bootstrap attempt ${attempt + 1}`);
       assert.equal((await opened[1].query('SELECT 1')).rows.length, 1);
     } finally {
       await Promise.all(opened.map((database) => database.close()));
@@ -117,7 +117,7 @@ test('execution failure after migration DDL rolls schema and ledger back, then v
                 (SELECT count(*)::text FROM sellers) AS sellers,
                 to_regclass('public.t02_partial_migration')::text AS partial`,
       );
-      assert.deepEqual(state.rows[0], { migrations: '1', sellers: '8', partial: null });
+      assert.deepEqual(state.rows[0], { migrations: '2', sellers: '8', partial: null });
     } finally {
       await recovered.close();
     }
@@ -179,7 +179,7 @@ test('bootstrap lock contention times out and succeeds after the lock holder rel
     await lockClient.query('ROLLBACK');
     const database = await databaseModule.Database!.open(fixture.url, assets);
     try {
-      assert.equal((await database.query('SELECT count(*)::int AS count FROM schema_migrations')).rows[0].count, 1);
+      assert.equal((await database.query('SELECT count(*)::int AS count FROM schema_migrations')).rows[0].count, 2);
     } finally {
       await database.close();
     }

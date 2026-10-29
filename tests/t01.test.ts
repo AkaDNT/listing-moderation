@@ -34,21 +34,26 @@ test('configuration rejects non-positive or non-decimal worker intervals and TTL
       assert.throws(() => loadConfig({ ...valid, [key]: value }), new RegExp(key));
     }
   }
-  assert.throws(() => loadConfig({ ...valid, LISTING_TTL_DAYS: undefined }), /LISTING_TTL_DAYS/);
 });
 
 test('runtime config factory validates configuration through production module wiring', async () => {
   const { RuntimeModule, RUNTIME_CONFIG } = await import('../src/runtime.module');
   const { NestFactory } = await import('@nestjs/core');
-  const app = await NestFactory.createApplicationContext(RuntimeModule.register(valid), { logger: false });
+  const { LISTING_TTL_DAYS: _omitted, ...withoutTtl } = valid;
+  const app = await NestFactory.createApplicationContext(RuntimeModule.register(withoutTtl), { logger: false });
   try {
     assert.equal(app.get(RUNTIME_CONFIG).databaseUrl, valid.DATABASE_URL);
+    assert.equal(app.get(RUNTIME_CONFIG).listingTtlDays, 30);
   } finally {
     await app.close();
   }
   await assert.rejects(
     NestFactory.createApplicationContext(RuntimeModule.register({ ...valid, PORT: '0' }), { logger: false, abortOnError: false }),
     /PORT/,
+  );
+  await assert.rejects(
+    NestFactory.createApplicationContext(RuntimeModule.register({ ...withoutTtl, LISTING_TTL_DAYS: '0' }), { logger: false, abortOnError: false }),
+    /LISTING_TTL_DAYS/,
   );
 });
 
@@ -68,9 +73,9 @@ test('actual API HTTP entrypoint exposes the exact live contract and validates s
     assert.match(response.headers.get('content-type') ?? '', /^application\/json\b/);
     assert.deepEqual(await response.json(), { status: 'ok' });
     const readiness = await fetch(`http://127.0.0.1:${address.port}/readyz`, { headers: { connection: 'close' } });
-    assert.equal(readiness.status, 404);
-    const readinessError = await readiness.json() as { error: { code: string; message: string } };
-    assert.equal(readinessError.error.code, 'not_found');
+    assert.equal(readiness.status, 200);
+    assert.match(readiness.headers.get('content-type') ?? '', /^application\/json\b/);
+    assert.deepEqual(await readiness.json(), { status: 'ok' });
 
     const malformed = await fetch(`http://127.0.0.1:${address.port}/missing`, {
       method: 'POST', headers: { connection: 'close', 'content-type': 'application/json' }, body: '{',
@@ -82,7 +87,7 @@ test('actual API HTTP entrypoint exposes the exact live contract and validates s
       `SELECT (SELECT count(*)::text FROM sellers) AS sellers,
               (SELECT count(*)::text FROM schema_migrations) AS migrations`,
     );
-    assert.deepEqual(bootstrapped.rows[0], { sellers: '8', migrations: '1' });
+  assert.deepEqual(bootstrapped.rows[0], { sellers: '8', migrations: '2' });
   } finally {
     await observer.end();
     if (app) await app.close();
@@ -111,7 +116,7 @@ test('standalone worker entrypoint constructs with real config and exits on SIGT
       `SELECT (SELECT count(*)::text FROM sellers) AS sellers,
               (SELECT count(*)::text FROM schema_migrations) AS migrations`,
     );
-    assert.deepEqual(bootstrapped.rows[0], { sellers: '8', migrations: '1' });
+    assert.deepEqual(bootstrapped.rows[0], { sellers: '8', migrations: '2' });
     const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolveExit) =>
       worker.once('exit', (code, signal) => resolveExit({ code, signal })));
     worker.kill('SIGTERM');

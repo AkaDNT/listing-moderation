@@ -15,15 +15,17 @@ export interface ModerationJobClaim {
   token: string;
   attempt: number;
   leaseUntil: string;
+  recovered?: boolean;
 }
 
 export type ClaimResult =
   | { kind: 'idle' }
-  | { kind: 'quarantined'; jobId: string }
-  | { kind: 'exhausted'; jobId: string }
+  | { kind: 'quarantined' | 'exhausted'; jobId: string; listingId: string; attempt: number; diagnostic: string }
   | { kind: 'claimed'; claim: ModerationJobClaim };
 
-export type ProcessResult = { kind: 'stale' | 'quarantined' | 'completed' };
+export type ProcessResult = { kind: 'stale' } |
+  { kind: 'quarantined'; diagnostic: 'unexpected_nonpending_listing' } |
+  { kind: 'completed'; status: string; outcome: string; ruleIds: string[] };
 
 export class ModerationJobRepository {
   constructor(private readonly database: Database) {}
@@ -51,7 +53,8 @@ export class ModerationJobRepository {
              last_error='invalid_running_metadata'
            WHERE id=$1 AND state='running' AND (claim_token IS NULL OR lease_until IS NULL)`, [job.id]);
         if (quarantined.rowCount !== 1) throw new Error('T08 invalid-running quarantine lost its row guard');
-        return { kind: 'quarantined', jobId: job.id };
+        return { kind: 'quarantined', jobId: job.id, listingId: job.listing_id,
+          attempt: job.attempts, diagnostic: 'invalid_running_metadata' };
       }
 
       if (job.attempts >= MAX_JOB_CLAIMS) {
@@ -60,7 +63,8 @@ export class ModerationJobRepository {
              last_error='max_claims_exhausted'
            WHERE id=$1 AND state=$2 AND attempts >= $3`, [job.id, job.state, MAX_JOB_CLAIMS]);
         if (failed.rowCount !== 1) throw new Error('T08 exhausted-job transition lost its row guard');
-        return { kind: 'exhausted', jobId: job.id };
+        return { kind: 'exhausted', jobId: job.id, listingId: job.listing_id,
+          attempt: job.attempts, diagnostic: 'max_claims_exhausted' };
       }
 
       const token = randomUUID();
@@ -78,7 +82,7 @@ export class ModerationJobRepository {
       return {
         kind: 'claimed',
         claim: { jobId: job.id, listingId: job.listing_id, token, attempt: claimed.rows[0].attempts,
-          leaseUntil: claimed.rows[0].lease_until.toISOString() },
+          leaseUntil: claimed.rows[0].lease_until.toISOString(), recovered: job.state === 'running' },
       };
     });
   }
@@ -108,7 +112,7 @@ export class ModerationJobRepository {
            WHERE id=$1 AND listing_id=$2 AND state='running' AND claim_token=$3::uuid
              AND lease_until>clock_timestamp()`, [claim.jobId, claim.listingId, claim.token]);
         if (quarantined.rowCount !== 1) return { kind: 'stale' };
-        return { kind: 'quarantined' };
+        return { kind: 'quarantined', diagnostic: 'unexpected_nonpending_listing' };
       }
 
       const applied = await new AutomatedListingRepository().applyAutomatedListing(client, claim.listingId);
@@ -139,7 +143,9 @@ export class ModerationJobRepository {
          WHERE id=$1 AND listing_id=$2 AND state='running' AND claim_token=$3::uuid
            AND lease_until>clock_timestamp()`, [claim.jobId, claim.listingId, claim.token]);
       if (completed.rowCount !== 1) throw new LostClaimError();
-      return { kind: 'completed' };
+      const decision = dto.decision as { outcome: string; reasons: { rule_id: string }[] };
+      return { kind: 'completed', status: dto.status, outcome: decision.outcome,
+        ruleIds: decision.reasons.map(reason => reason.rule_id) };
     });
   }
 

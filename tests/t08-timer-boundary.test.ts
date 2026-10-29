@@ -5,6 +5,8 @@ import { loadConfig } from '../src/config';
 import { bootstrapWorker } from '../src/worker';
 import { loadBootstrapAssets } from '../src/db/assets';
 import { WorkerLoop } from '../src/worker/worker-loop';
+import { PublicationRepository } from '../src/lifecycle/publication.repository';
+import { ExpiryRepository } from '../src/lifecycle/expiry.repository';
 import { createTestDatabase } from './helpers/postgres';
 import { scope } from './helpers/t08';
 
@@ -22,9 +24,10 @@ test('T08 config rejects positive safe polling intervals beyond the Node timer m
 
 test('T08 direct WorkerLoop constructor rejects timer overflow and accepts the supported boundaries', async () => {
   await scope(async s => {
-    for (const value of [1, 2147483647]) assert.doesNotThrow(() => new WorkerLoop(s.jobs, value));
+    const publication = new PublicationRepository(s.database, 30);
+    for (const value of [1, 2147483647]) assert.doesNotThrow(() => new WorkerLoop(s.jobs, publication, new ExpiryRepository(s.database), value));
     for (const value of [2147483648, Number.MAX_SAFE_INTEGER, 0, -1, 1.5, Number.NaN, Infinity]) {
-      assert.throws(() => new WorkerLoop(s.jobs, value), /polling interval/i);
+      assert.throws(() => new WorkerLoop(s.jobs, publication, new ExpiryRepository(s.database), value), /polling interval/i);
     }
   });
 });

@@ -1,4 +1,4 @@
-import { Controller, Get, INestApplication, Module } from '@nestjs/common';
+import { INestApplication, Module } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { loadConfig } from './config';
 import { RUNTIME_CONFIG, RuntimeModule } from './runtime.module';
@@ -7,15 +7,12 @@ import { DATABASE } from './db/database.module';
 import { Database } from './db/database';
 import { installHttpTransport } from './http/install-http-transport';
 import { SubmissionModule } from './submission/submission.module';
+import { HumanDecisionModule } from './human/human-decision.module';
+import { HealthModule } from './health/health.module';
+import { sanitizeWorkerError } from './worker/job-policy';
 
 export type HttpTransportInstaller = (app: INestApplication) => void;
 export type ApiInitializer = (app: INestApplication) => Promise<void>;
-
-@Controller()
-class LiveController {
-  @Get('livez')
-  live() { return { status: 'ok' }; }
-}
 
 export async function createApi(
   env: NodeJS.ProcessEnv = process.env,
@@ -27,8 +24,7 @@ export async function createApi(
   const assets = suppliedAssets ?? await loadBootstrapAssets();
   const database = await Database.open(config.databaseUrl, assets);
   @Module({
-    imports: [RuntimeModule.register(env), SubmissionModule.register(database)],
-    controllers: [LiveController],
+    imports: [RuntimeModule.register(env), SubmissionModule.register(database), HumanDecisionModule.register(database, config.listingTtlDays), HealthModule.register(database)],
   })
   class ApiModule {}
   let app: INestApplication | undefined;
@@ -68,7 +64,7 @@ if (require.main === module) {
       throw listenError;
     }
   }).catch((error) => {
-    console.error(error instanceof Error ? error.message : 'API startup failed');
+    console.error(JSON.stringify({ event: 'api_startup_failed', diagnostic: sanitizeWorkerError(error) }));
     process.exitCode = 1;
   });
 }

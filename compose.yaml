@@ -27,7 +27,7 @@ services:
       PORT: "8080"
       DATABASE_URL: postgres://moderator:local-only@db:5432/listings
       POLL_INTERVAL_MS: "1000"
-      LISTING_TTL_DAYS: "30"
+      LISTING_TTL_DAYS: "${LISTING_TTL_DAYS:-30}"
     ports:
       - "${PORT:-8080}:8080"
     depends_on:
@@ -47,7 +47,7 @@ services:
     environment:
       DATABASE_URL: postgres://moderator:local-only@db:5432/listings
       POLL_INTERVAL_MS: "1000"
-      LISTING_TTL_DAYS: "30"
+      LISTING_TTL_DAYS: "${LISTING_TTL_DAYS:-30}"
     depends_on:
       db:
         condition: service_healthy
@@ -63,7 +63,7 @@ volumes:
     labels:
       com.listing-moderation.workspace: "${LM_WORKSPACE:?workspace owner is required}"
       com.listing-moderation.mode: "${LM_MODE:?lifecycle mode is required}"
-      com.listing-moderation.invocation: "${LM_MODE}"
+      com.listing-moderation.invocation: "${LM_INVOCATION:?invocation is required}"
 
 networks:
   default:

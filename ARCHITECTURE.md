@@ -39,9 +39,10 @@ ordering retains PostgreSQL timestamp precision even though public ISO strings
 are formatted to milliseconds. Malformed known query encodings return 400 while
 malformed unknown extension values are ignored. T06 adds a pure R1/R2/R4/R5
 evaluator and a read-only repository for persisted seller, category, and banned
-keyword snapshots. Normal non-trusted listings require an explicit R3 fact; T06
-does not query or commit R3. No route or worker job loop invokes this evaluator
-yet. T08 adds the database-backed worker loop described below.
+keyword snapshots. Normal non-trusted listings require an explicit R3 fact;
+R3 arbitration is performed by the transaction-bound automated listing
+repository. The database-backed worker described below invokes that production
+evaluation path.
 
 The worker claims due jobs with PostgreSQL row locks and `SKIP LOCKED`, records a
 UUID claim token and a 30-second database-clock lease, and processes one job at a
@@ -69,7 +70,54 @@ IDs containing those values return 422. Valid Unicode scalar text is stored
 unchanged. Unknown JSON properties remain in the idempotency hash but are not
 written to PostgreSQL text columns.
 
+## Human decisions and publication
+
+`POST /v1/listings/{id}/decision` is registered through the production human
+module and transport. Its pipe validates/projects the request before the service
+calls `HumanDecisionRepository`. The repository locks the listing in a
+READ COMMITTED transaction and accepts only `needs_human` with a mapped
+`escalated` decision and NULL publication timestamps. It writes the replacement
+HUMAN decision, one DB-clock `decided_at`, and one human history row in the same
+transaction. Approval also sets `published_at` to that same instant and derives
+`expires_at` using exact 24-hour days; rejection leaves both publication times
+NULL. Conflicting requests see the committed terminal state and return 409.
+Moderator metadata is retained in internal history, not exposed in the public
+decision.
+
+The worker runs `PublicationRepository` after its moderation work, scanning at
+most one persisted `auto_approved` row per tick. It uses row locking with
+`SKIP LOCKED`, validates the stored approval through the production mapper,
+then updates status/timestamps/version transactionally. This lifecycle update
+does not write another moderation history row or alter the automated decision,
+`decided_at`, or job. A committed row remains discoverable after worker restart.
+Publication SQL errors are logged separately from moderation failures and the
+row remains eligible for a later scan. A permanently failing oldest row can
+starve later rows; an operator must resolve the underlying data/SQL problem.
+There is no publication quarantine or fairness scheduler in this design.
+After publication the same worker loop runs a bounded expiry batch using the
+PostgreSQL transaction clock. It changes only due `published` rows to `expired`
+and increments their lifecycle version. A partial deadline index covers
+published rows; expired rows retain the current decision, decided_at and audit
+history. Restarted workers continue scanning persisted overdue rows.
+
 ## Transactions and ownership
+
+The API health module owns both `/livez` and `/readyz`. Liveness reports only
+that the listener can answer. Readiness uses the same bootstrapped `Database`
+instance as listing routes and a bounded `SELECT 1`; it coalesces simultaneous
+in-flight probes without caching a previous success. A failed probe returns a
+public 503 without database details. A successful bootstrap is remembered for
+this process; the probe does not rescan migrations or seeds on each request, so
+it cannot detect every later schema or seed mutation. Shutdown marks readiness
+draining before the pool closes. The probe releases checked-out clients and
+destroys one after query error or timeout; the driver's client-side timeout is
+not a claim that PostgreSQL cancelled a server-side operation.
+
+Worker completion metadata comes from the mapped persisted decision inside
+the automated commit transaction and is logged only after commit. Claim recovery,
+quarantine, exhaustion and stale results use allowlisted identifiers and safe
+diagnostics. The read-only operator SQL and guarded requeue template live under
+`ops/`; these are manual operational aids, not unauthenticated HTTP endpoints.
 
 `src/db/transaction.ts` checks out one `PoolClient` and uses it for `BEGIN`, all
 callback statements, and `COMMIT` or `ROLLBACK`. The callback must not issue

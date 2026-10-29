@@ -6,6 +6,7 @@ import { Pool, PoolClient } from 'pg';
 import { Database } from '../src/db/database';
 import { loadBootstrapAssets } from '../src/db/assets';
 import { createTestDatabase } from './helpers/postgres';
+import { blocked } from './helpers/t08';
 
 interface ListingFields { sellerId: string; categoryId: string; title: string; description: string; priceVnd: bigint }
 interface SubmissionRepository { submit(fields: ListingFields): Promise<{ id: string; status: string }> }
@@ -66,6 +67,19 @@ async function pollRows(pool: Pool, ids: string[], expected: number, timeoutMs: 
   throw new Error('timed out waiting for completed jobs; last count=' + String(last));
 }
 
+async function pollPublication(pool: Pool, ids: string[], timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  let remaining = -1;
+  while (Date.now() < deadline) {
+    const result = await pool.query<{ remaining: number }>(
+      "SELECT count(*)::int AS remaining FROM listings WHERE id=ANY($1::text[]) AND status='auto_approved'", [ids]);
+    remaining = result.rows[0].remaining;
+    if (remaining === 0) return;
+    await new Promise(resolveDelay => setTimeout(resolveDelay, 20));
+  }
+  throw new Error(`timed out waiting for T09 publication; remaining auto_approved=${remaining}`);
+}
+
 test('two standalone worker processes drain shared PostgreSQL jobs once and preserve one auto history per listing', { timeout: 30000 }, async () => {
   const fixtureDb = await createTestDatabase();
   let database: Database | undefined;
@@ -95,6 +109,7 @@ test('two standalone worker processes drain shared PostgreSQL jobs once and pres
     for (let index = 0; index < 2; index += 1) children.push(startWorker(fixtureDb.url));
     await Promise.all(children.map(child => waitForMessage(child, 7000)));
     await pollRows(observer, ids, ids.length, 12000);
+    await pollPublication(observer, ids, 12000);
     const persisted = await observer.query<{
       id: string; status: string; outcome: string; has_r3: boolean; job_state: string; attempts: number; version: string; history_count: number;
     }>(
@@ -105,13 +120,13 @@ test('two standalone worker processes drain shared PostgreSQL jobs once and pres
       "FROM listings l JOIN moderation_jobs j ON j.listing_id=l.id WHERE l.id=ANY($1::text[]) ORDER BY l.id", [ids]);
     assert.equal(persisted.rowCount, ids.length);
     for (const row of persisted.rows) {
-      assert.ok(row.status === 'auto_approved' || row.status === 'auto_rejected'); assert.equal(row.job_state, 'completed');
-      assert.equal(row.attempts, 1); assert.equal(row.version, '1'); assert.equal(row.history_count, 1);
+      assert.ok(row.status === 'published' || row.status === 'auto_rejected'); assert.equal(row.job_state, 'completed');
+      assert.equal(row.attempts, 1); assert.equal(row.version, row.status === 'published' ? '2' : '1'); assert.equal(row.history_count, 1);
     }
     const byId = new Map(persisted.rows.map(row => [row.id, row]));
     for (const [firstId, secondId] of duplicatePairs) {
       const pair = [byId.get(firstId)!, byId.get(secondId)!];
-      assert.equal(pair.filter(row => row.status === 'auto_approved' && row.outcome === 'approved' && !row.has_r3).length, 1);
+      assert.equal(pair.filter(row => row.status === 'published' && row.outcome === 'approved' && !row.has_r3).length, 1);
       assert.equal(pair.filter(row => row.status === 'auto_rejected' && row.outcome === 'rejected' && row.has_r3).length, 1);
     }
   } catch (error) { primary = error; }
@@ -186,11 +201,12 @@ test('process death inside the listing transaction leaves no partial result and 
     restarted = startWorker(fixtureDb.url);
     await waitForMessage(restarted, 7000);
     await pollRows(observer, [created.id], 1, 9000);
+    await pollPublication(observer, [created.id], 9000);
     const recovered = await observer.query<{ attempts: number; status: string; version: string; history_count: number }>(
       "SELECT j.attempts,l.status,l.version::text AS version," +
       "(SELECT count(*)::int FROM moderation_history h WHERE h.listing_id=l.id AND h.phase='auto') AS history_count " +
       "FROM listings l JOIN moderation_jobs j ON j.listing_id=l.id WHERE l.id=$1", [created.id]);
-    assert.deepEqual(recovered.rows[0], { attempts: 2, status: 'auto_approved', version: '1', history_count: 1 });
+    assert.deepEqual(recovered.rows[0], { attempts: 2, status: 'published', version: '2', history_count: 1 });
   } catch (error) { primary = error; }
   const cleanup: unknown[] = [];
   for (const child of [first, restarted]) if (child) try { await stopWorker(child); } catch (error) { child.kill('SIGKILL'); cleanup.push(error); }
@@ -215,32 +231,62 @@ test('process death after the committed phase and restart do not append a second
   const observer = new Pool({ connectionString: fixtureDb.url });
   let first: ChildProcess | undefined;
   let restarted: ChildProcess | undefined;
+  let control: PoolClient | undefined;
+  let controlPid: number | undefined;
   let primary: unknown;
   try {
     database = await Database.open(fixtureDb.url, await loadBootstrapAssets());
     const created = await productionSubmission(database).submit({ sellerId: 's-1002', categoryId: 'c-phones',
       title: 'T08 crash after committed phase', description: 'clean', priceVnd: 6000000n });
+    control = await observer.connect();
+    controlPid = (await control.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0].pid;
+    await control.query('SELECT pg_advisory_lock(82755,2)');
+    await observer.query(`CREATE FUNCTION t09_block_publication() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+      IF OLD.status='auto_approved' AND NEW.status='published' THEN PERFORM pg_advisory_xact_lock(82755,2); END IF;
+      RETURN NEW; END $$`);
+    await observer.query('CREATE TRIGGER t09_block_publication BEFORE UPDATE ON listings FOR EACH ROW EXECUTE FUNCTION t09_block_publication()');
     first = startWorker(fixtureDb.url);
     await waitForMessage(first, 7000);
-    await pollRows(observer, [created.id], 1, 9000);
-    const committed = await observer.query<{ status: string; version: string; state: string; attempts: number; history_count: number }>(
-      "SELECT l.status,l.version::text AS version,j.state,j.attempts," +
+    await blocked(observer, controlPid, 'UPDATE listings AS l');
+    const committed = await observer.query<{ status: string; version: string; state: string; attempts: number; history_count: number;
+      decision: string; decided_at: Date; published_at: Date | null }>(
+      "SELECT l.status,l.version::text AS version,j.state,j.attempts,l.decision::text AS decision,l.decided_at,l.published_at," +
       "(SELECT count(*)::int FROM moderation_history h WHERE h.listing_id=l.id AND h.phase='auto') AS history_count " +
       'FROM listings l JOIN moderation_jobs j ON j.listing_id=l.id WHERE l.id=$1', [created.id]);
-    assert.deepEqual(committed.rows[0], { status: 'auto_approved', version: '1', state: 'completed', attempts: 1, history_count: 1 });
+    assert.equal(committed.rows[0].status, 'auto_approved');
+    assert.equal(committed.rows[0].version, '1');
+    assert.equal(committed.rows[0].state, 'completed');
+    assert.equal(committed.rows[0].attempts, 1);
+    assert.equal(committed.rows[0].history_count, 1);
+    assert.ok(committed.rows[0].decided_at instanceof Date);
+    assert.equal(committed.rows[0].published_at, null);
     await stopWorker(first, 'SIGKILL');
     first = undefined;
+    await control.query('SELECT pg_advisory_unlock(82755,2)');
+    await observer.query('DROP TRIGGER t09_block_publication ON listings');
+    await observer.query('DROP FUNCTION t09_block_publication()');
     restarted = startWorker(fixtureDb.url);
     await waitForMessage(restarted, 7000);
-    await new Promise(resolveDelay => setTimeout(resolveDelay, 100));
-    const afterRestart = await observer.query<{ status: string; version: string; state: string; attempts: number; history_count: number }>(
-      "SELECT l.status,l.version::text AS version,j.state,j.attempts," +
+    await pollPublication(observer, [created.id], 9000);
+    const afterRestart = await observer.query<{ status: string; version: string; state: string; attempts: number; history_count: number;
+      decision: string; decided_at: Date; published_at: Date }>(
+      "SELECT l.status,l.version::text AS version,j.state,j.attempts,l.decision::text AS decision,l.decided_at,l.published_at," +
       "(SELECT count(*)::int FROM moderation_history h WHERE h.listing_id=l.id AND h.phase='auto') AS history_count " +
       'FROM listings l JOIN moderation_jobs j ON j.listing_id=l.id WHERE l.id=$1', [created.id]);
-    assert.deepEqual(afterRestart.rows[0], committed.rows[0]);
+    const row = afterRestart.rows[0];
+    assert.equal(row.status, 'published'); assert.equal(row.version, '2'); assert.equal(row.state, 'completed');
+    assert.equal(row.attempts, 1); assert.equal(row.history_count, 1);
+    assert.equal(row.decision, committed.rows[0].decision);
+    assert.equal(row.decided_at.toISOString(), committed.rows[0].decided_at.toISOString());
+    assert.ok(row.published_at instanceof Date);
   } catch (error) { primary = error; }
   const cleanup: unknown[] = [];
   for (const child of [first, restarted]) if (child) try { await stopWorker(child); } catch (error) { child.kill('SIGKILL'); cleanup.push(error); }
+  if (control) {
+    try { await control.query('SELECT pg_advisory_unlock_all()'); } catch (error) { cleanup.push(error); }
+    try { control.release(); } catch (error) { cleanup.push(error); }
+  }
+  try { await observer.query('DROP TRIGGER IF EXISTS t09_block_publication ON listings'); await observer.query('DROP FUNCTION IF EXISTS t09_block_publication()'); } catch (error) { cleanup.push(error); }
   try { await observer.end(); } catch (error) { cleanup.push(error); }
   if (database) try { await database.close(); } catch (error) { cleanup.push(error); }
   try { await fixtureDb.dispose(); } catch (error) { cleanup.push(error); }
