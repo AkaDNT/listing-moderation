@@ -1,3 +1,4 @@
+import { PoolClient } from 'pg';
 import { Database } from '../db/database';
 import { CategoryReference, ModerationReferences, SellerReference } from './moderation.types';
 
@@ -11,10 +12,15 @@ interface ReferenceRow {
 }
 
 export class ReferenceDataRepository {
-  constructor(private readonly database: Database) {}
+  constructor(private readonly database: Database | PoolClient) {}
+
+  private query(sql: string, values: unknown[]): Promise<{ rows: ReferenceRow[] }> {
+    if (this.database instanceof Database) return this.database.query<ReferenceRow>(sql, values);
+    return this.database.query<ReferenceRow>(sql, values);
+  }
 
   async load(sellerId: string, categoryId: string): Promise<ModerationReferences | undefined> {
-    const result = await this.database.query<ReferenceRow>(
+    const result = await this.query(
       `SELECT s.id AS seller_id, s.trust_score, s.verified,
               c.id AS category_id, c.median_price_vnd::text AS median_price_vnd,
               ARRAY(SELECT term FROM banned_keywords ORDER BY term COLLATE "C") AS banned_keywords
