@@ -1,22 +1,34 @@
-import { Injectable, Module, OnApplicationShutdown } from '@nestjs/common';
+import { BeforeApplicationShutdown, Inject, Injectable, Module, OnApplicationBootstrap } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { loadConfig } from './config';
 import { RuntimeModule } from './runtime.module';
 import { BootstrapAssets, loadBootstrapAssets } from './db/assets';
 import { Database } from './db/database';
 import { DatabaseModule, DATABASE } from './db/database.module';
+import { RuntimeConfig } from './config';
+import { RUNTIME_CONFIG } from './runtime.module';
+import { ModerationJobRepository } from './worker/moderation-job.repository';
+import { WorkerLoop } from './worker/worker-loop';
 
 @Injectable()
-class WorkerLifecycle implements OnApplicationShutdown {
-  private readonly timer = setInterval(() => undefined, 60_000);
-  onApplicationShutdown() { clearInterval(this.timer); }
+class WorkerLifecycle implements OnApplicationBootstrap, BeforeApplicationShutdown {
+  constructor(@Inject('WORKER_LOOP') private readonly loop: WorkerLoop) {}
+  onApplicationBootstrap() { this.loop.start(); }
+  beforeApplicationShutdown() { return this.loop.stop(); }
 }
 
 export async function bootstrapWorker(env: NodeJS.ProcessEnv = process.env, suppliedAssets?: BootstrapAssets) {
   const config = loadConfig(env);
   const assets = suppliedAssets ?? await loadBootstrapAssets();
   const database = await Database.open(config.databaseUrl, assets);
-  @Module({ imports: [RuntimeModule.register(env), DatabaseModule.register(database)], providers: [WorkerLifecycle] })
+  @Module({
+    imports: [RuntimeModule.register(env), DatabaseModule.register(database)],
+    providers: [
+      { provide: 'WORKER_LOOP', useFactory: (db: Database, runtime: RuntimeConfig) =>
+        new WorkerLoop(new ModerationJobRepository(db), runtime.pollIntervalMs), inject: [DATABASE, RUNTIME_CONFIG] },
+      WorkerLifecycle,
+    ],
+  })
   class WorkerModule {}
   try {
     const app = await NestFactory.createApplicationContext(WorkerModule, { logger: false, abortOnError: false });

@@ -6,9 +6,9 @@ The API and standalone worker run in Docker containers alongside PostgreSQL 16.
 Before the API starts listening or the worker announces startup, both processes
 connect to PostgreSQL, acquire the shared transaction-scoped bootstrap lock,
 apply pending checksummed SQL migrations, and upsert the reference seed data.
-The API exposes `GET /livez`, which reports process liveness. Dynamic database
-readiness is planned for a later task. The listing submission and read routes
-are available as described below.
+The API exposes `GET /livez`, which reports process liveness. The listing
+submission and read routes are available as described below. A separate worker
+process claims database jobs and commits automated moderation results.
 
 ```sh
 make run                 # foreground; API at http://localhost:8080
@@ -35,7 +35,17 @@ run moderation inline. T05 implements `GET /v1/listings/{id}` and
 `GET /v1/listings` through the same production mapper. List filters are exact
 `seller_id` and `status` matches with a default limit of 20 (maximum 100),
 ordered by `created_at DESC, id DESC`. Int64 prices and decision JSON values
-retain numeric precision in responses. Worker processing remains a later task.
+retain numeric precision in responses. The worker processes one job at a time per
+process using PostgreSQL leases and row locks. Each job receives at most five
+claims, including lease recoveries; failed attempts use bounded full-jitter
+backoff, and exhausted jobs become `failed` while their listing remains pending.
+Malformed running-job metadata and a live job attached to a non-pending listing
+are quarantined for operator inspection. Requeue is a guarded SQL operation and
+requires confirming the listing is still pending. The worker handles SIGTERM and
+SIGINT by stopping new claims, waiting for active work, and closing its database
+pool; a forced kill is recovered after lease expiry.
+`POLL_INTERVAL_MS` defaults to 1000 and accepts integer milliseconds from 1 to
+2,147,483,647; larger delays are rejected to prevent Node timer overflow.
 If the lifecycle lock is left behind after a forced kill or machine crash, inspect
 the PID file and Docker resources before removing the stale lock directory under
 `${TMPDIR:-/tmp}`.

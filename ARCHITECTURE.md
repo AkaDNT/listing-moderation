@@ -41,8 +41,27 @@ malformed unknown extension values are ignored. T06 adds a pure R1/R2/R4/R5
 evaluator and a read-only repository for persisted seller, category, and banned
 keyword snapshots. Normal non-trusted listings require an explicit R3 fact; T06
 does not query or commit R3. No route or worker job loop invokes this evaluator
-yet. Worker decision commit, claim/retry behavior, and dynamic readiness belong
-to later tasks.
+yet. T08 adds the database-backed worker loop described below.
+
+The worker claims due jobs with PostgreSQL row locks and `SKIP LOCKED`, records a
+UUID claim token and a 30-second database-clock lease, and processes one job at a
+time per process. Claims include crash/lease recoveries and are capped at five;
+retry scheduling uses full jitter with an exponential ceiling capped at 30 seconds.
+An automated listing decision, append-only `auto` history row, and guarded job
+completion commit in one transaction. The repository reuses the T07 evaluator and
+R3 arbitration against the caller's transaction; production listing mapping
+validates the persisted decision before history is written. Failed attempts retain
+the listing as pending, store only a sanitized diagnostic, and become `failed`
+after exhaustion. Malformed live running metadata and live jobs pointing to a
+non-pending listing are quarantined as failed without changing listing/history.
+An operator may requeue a failed job only after inspection and confirming its
+listing remains pending; the guarded SQL template is in the T08 execution log.
+The worker shutdown stops new claims and polling, waits for its active operation,
+then closes the database pool. A forced process death leaves the lease for later
+recovery.
+The polling interval defaults to 1,000 milliseconds and is bounded to the Node
+timer range of 1 through 2,147,483,647 milliseconds at both configuration and
+worker-loop construction boundaries.
 
 The submission pipe checks persisted text fields before database access: title
 and description reject U+0000 and unpaired UTF-16 surrogates with 400; reference
